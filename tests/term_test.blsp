@@ -1,0 +1,50 @@
+;; Tests for the terminal UI reducer + renderer (term.blsp).
+(defmodule term-test (:use term) (:use test))
+
+(defn type-str (m s) (fold (fn (acc ch) (update acc ch 80 24)) m (string->list s)))
+(defn fresh () {:tabs [(new-tab "/a/b")] :active 0 :done false})
+
+(describe "line editing"
+  (test "typing accumulates into :input"
+    (assert= (get (active-tab (type-str (fresh) "hello")) :input) "hello"))
+  (test "backspace deletes before the cursor"
+    (let (m (update (type-str (fresh) "hi") :backspace 80 24))
+      (assert= (get (active-tab m) :input) "h")))
+  (test "left then backspace deletes mid-line"
+    (let (m (update (update (type-str (fresh) "ab") :left 80 24) :backspace 80 24))
+      (assert= (get (active-tab m) :input) "b"))))
+
+(describe "submit + history"
+  (test "enter clears input and records history"
+    (let (m (update (type-str (fresh) "pwd") :enter 80 24)
+          t (active-tab m))
+      (assert= (get t :input) "")
+      (assert= (get t :history) ["pwd"])))
+  (test "up-arrow recalls the last command"
+    (let (m (update (update (type-str (fresh) "pwd") :enter 80 24) :up 80 24))
+      (assert= (get (active-tab m) :input) "pwd")))
+  (test "cd updates the tab cwd"
+    (let (m0 {:tabs [(new-tab "/usr/share")] :active 0 :done false}
+          m (update (type-str m0 "cd ..") :enter 80 24))
+      (assert= (get (active-tab m) :cwd) "/usr"))))
+
+(describe "tabs"
+  (test "ctrl-t opens and focuses a new tab"
+    (let (m (update (fresh) :ctrl-t 80 24))
+      (assert= (count (get m :tabs)) 2)
+      (assert= (get m :active) 1)))
+  (test "alt-1 switches to the first tab"
+    (let (m (update (update (fresh) :ctrl-t 80 24) :alt-1 80 24))
+      (assert= (get m :active) 0)))
+  (test "ctrl-w on the last tab quits"
+    (is (get (update (fresh) :ctrl-w 80 24) :done)))
+  (test "ctrl-w with two tabs closes one"
+    (let (m (update (update (fresh) :ctrl-t 80 24) :ctrl-w 80 24))
+      (assert= (count (get m :tabs)) 1)
+      (is (not (get m :done))))))
+
+(describe "view"
+  (test "renders a frame (vector of ops)"
+    (is (vector? (view (fresh) 80 24))))
+  (test "survives a tiny terminal without crashing"
+    (is (vector? (view (fresh) 10 4)))))

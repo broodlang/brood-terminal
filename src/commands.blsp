@@ -1,0 +1,476 @@
+;; src/commands.blsp — the built-in command set for brood-terminal.
+;;
+;; This is the "shell" half of the app: a pure-ish interpreter that turns a
+;; typed command line into rendered output. There is no PTY/bash behind it
+;; (the runtime has no pseudo-terminal yet, ADR note in CLAUDE.md) — every
+;; command here is implemented in Brood over the filesystem builtins
+;; (`list-dir` / `slurp` / `dir?` / `make-dir` / …).
+;;
+;; A command is dispatched by `run-command`, which returns a RESULT map:
+;;   {:lines  (list of span-lines)   ; output to append to the scrollback
+;;    :cwd    "/new/dir"             ; optional — a new working directory
+;;    :clear  true                   ; optional — wipe the scrollback
+;;    :exit   true}                  ; optional — close the tab / quit
+;; Omitted keys mean "unchanged". The UI layer (`term.blsp`) owns the model;
+;; this module only knows the current directory + terminal width (via `ctx`).
+;;
+;; A SPAN is a vector `[string face]` (`face` a `display` style map or nil); a
+;; SPAN-LINE is a list of spans laid left-to-right. The renderer in `term.blsp`
+;; paints them.
+
+(defmodule commands
+  "Built-in commands for brood-terminal (a Brood mini-shell — no real bash/PTY).
+Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
+(scrollback span-lines) plus optional `:cwd` / `:clear` / `:exit`.")
+
+;; ---- faces ------------------------------------------------------------------
+
+(def *f-err* {:fg :red})
+(def *f-dir* {:fg :cyan :bold true})
+(def *f-exec* {:fg :green :bold true})
+(def *f-head* {:fg :yellow :bold true})
+(def *f-dim* {:fg :dark-grey})
+(def *f-prompt* {:fg :green :bold true})
+
+;; ---- line / span constructors ----------------------------------------------
+
+(defn ln (s &optional (f nil))
+  "A one-span line carrying string `s` styled by face `f` (nil = default)."
+  (list [s f]))
+
+(defn err (msg)
+  "A result whose only output is the error `msg` drawn in red."
+  {:lines (list (ln msg *f-err*))})
+
+(defn out (lines)
+  "A result whose output is `lines` (a list of span-lines)."
+  {:lines lines})
+
+;; ---- path resolution --------------------------------------------------------
+
+(defn home ()
+  "The user's home directory (`$HOME`, or `/` if unset)."
+  (or (getenv "HOME") "/"))
+
+(defn expand-tilde (p)
+  (cond
+    (= p "~") (home)
+    (starts-with? p "~/") (str (home) (substring p 1 (string-length p)))
+    :else p))
+
+(defn split-path (p)
+  "The non-empty `/`-separated components of `p`."
+  (filter (fn (s) (not (= s ""))) (string-split p "/")))
+
+(defn norm--step (stack c)
+  (cond
+    (= c ".") stack
+    (= c "..") (if (empty? stack) stack (subvec stack 0 (dec (count stack))))
+    :else (into stack [c])))
+
+(defn resolve-path (cwd p)
+  "Absolute, normalised path for `p` interpreted relative to `cwd` — expands a
+leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
+  (let (p1 (expand-tilde p)
+        joined (if (starts-with? p1 "/") p1 (str cwd "/" p1))
+        comps (fold norm--step [] (split-path joined)))
+    (str "/" (join "/" comps))))
+
+(defn short-cwd (cwd)
+  "`cwd` with the home prefix shown as `~` (the prompt's compact form)."
+  (let (h (home))
+    (cond
+      (= cwd h) "~"
+      (starts-with? cwd (str h "/")) (str "~" (substring cwd (string-length h) (string-length cwd)))
+      :else cwd)))
+
+;; ---- tokenizer (whitespace split with "double quotes" + $VAR expansion) -----
+
+(defn expand-token (t)
+  (if (and (starts-with? t "$") (> (string-length t) 1))
+    (or (getenv (substring t 1 (string-length t))) "")
+    t))
+
+(defn tok--push (cur toks)
+  (if (= cur "") toks (cons (expand-token cur) toks)))
+
+(defn tok--scan (cs cur toks inq)
+  (if (empty? cs)
+    (reverse (tok--push cur toks))
+    (let (c (first cs)
+          tl (rest cs))
+      (cond
+        (= c "\"") (tok--scan tl cur toks (not inq))
+        (and (not inq) (= c " ")) (tok--scan tl "" (tok--push cur toks) inq)
+        (and (not inq) (= c "\t")) (tok--scan tl "" (tok--push cur toks) inq)
+        :else (tok--scan tl (str cur c) toks inq)))))
+
+(defn tokenize (s)
+  "Split a command line into argument tokens — whitespace-separated, honouring
+`\"double quotes\"`, with leading-`$` tokens expanded from the environment."
+  (tok--scan (string->list s) "" nil false))
+
+;; ---- small helpers ----------------------------------------------------------
+
+(defn chunk--acc (n coll acc)
+  (if (empty? coll)
+    (reverse acc)
+    (chunk--acc n (drop n coll) (cons (take n coll) acc))))
+
+(defn chunk (n coll)
+  "`coll` split into consecutive lists of at most `n` items (keeps the remainder,
+unlike `partition`)."
+  (chunk--acc n coll nil))
+
+(defn max-len (strs)
+  (fold (fn (m s) (max m (string-length s))) 0 strs))
+
+(defn split-lines (s)
+  "`s` split on newlines (a trailing newline does not yield a final empty line)."
+  (let (parts (string-split s "\n")
+        n (count parts))
+    (if (and (> n 1) (= (nth parts (dec n)) ""))
+      (take (dec n) parts)
+      parts)))
+
+(defn flag? (args f) (includes? args f))
+(defn positional (args) (filter (fn (a) (not (starts-with? a "-"))) args))
+
+;; ---- ls / ll ----------------------------------------------------------------
+
+(defn visible (entries showall)
+  (if showall entries (filter (fn (e) (not (starts-with? e "."))) entries)))
+
+(defn ls-cell (dir name)
+  ;; [display-string face] — directories get a trailing slash and the dir face.
+  (let (full (resolve-path dir name)
+        d (dir? full))
+    [(if d (str name "/") name) (if d *f-dir* nil)]))
+
+(defn ls-row-spans (cells colw)
+  ;; one span-line: each cell padded to colw, keeping its own face.
+  (map (fn ([disp face]) [(pad-right disp colw) face]) cells))
+
+(defn ls-grid (dir names cols)
+  (let (cells (map (fn (n) (ls-cell dir n)) names)
+        colw (+ 2 (max-len (map (fn (c) (first c)) cells)))
+        ncols (max 1 (quot (max cols 1) colw))
+        rows (chunk ncols cells))
+    (map (fn (r) (ls-row-spans r colw)) rows)))
+
+(defn cmd-ls (args cwd cols)
+  (let (showall (flag? args "-a")
+        pos (positional args)
+        arg0 (if (empty? pos) "." (first pos))
+        target (resolve-path cwd arg0))
+    (cond
+      (not (file-exists? target)) (err (str "ls: cannot access '"
+                                         arg0
+                                         "': No such file or directory"))
+      (not (dir? target)) (out (list (ln arg0)))
+      :else (let (names (sort (visible (list-dir target) showall)))
+              (if (empty? names)
+                (out nil)
+                (out (ls-grid target names cols)))))))
+
+(defn ll-line (dir name)
+  (let (full (resolve-path dir name)
+        d (dir? full)
+        sz (if d "-" (number->string (or (file-size full) 0)))
+        face (if d *f-dir* nil))
+    (list [(if d "d " "- ") *f-dim*]
+      [(pad-left sz 10) *f-dim*]
+      ["  " nil]
+      [(if d (str name "/") name) face])))
+
+(defn cmd-ll (args cwd)
+  (let (pos (positional args)
+        arg0 (if (empty? pos) "." (first pos))
+        target (resolve-path cwd arg0))
+    (cond
+      (not (file-exists? target)) (err (str "ll: cannot access '" arg0 "'"))
+      (not (dir? target)) (out (list (ll-line cwd arg0)))
+      :else (let (names (sort (visible (list-dir target) (flag? args "-a"))))
+              (out (map (fn (n) (ll-line target n)) names))))))
+
+;; ---- cat / head / tail / wc / grep -----------------------------------------
+
+(defn read-file-lines (cwd a)
+  ;; -> [:ok lines] | [:err msg]
+  (let (p (resolve-path cwd a))
+    (cond
+      (not (file-exists? p)) [:err (str a ": No such file or directory")]
+      (dir? p) [:err (str a ": Is a directory")]
+      :else [:ok (split-lines (slurp p))])))
+
+(defn for-each-file (cwd args render-ok)
+  ;; fold over file args, concatenating output lines; errors render in red.
+  (out (fold (fn (acc a)
+               (match (read-file-lines cwd a)
+                 ([:err m] (append acc (list (ln (str "cat: " m) *f-err*))))
+                 ([:ok lns] (append acc (render-ok a lns)))))
+         nil
+         args)))
+
+(defn cmd-cat (args cwd)
+  (if (empty? args)
+    (err "cat: missing file operand")
+    (for-each-file cwd args (fn (a lns) (map (fn (l) (ln l)) lns)))))
+
+(defn parse-n (args default)
+  ;; -> [n positional-args] ; supports "-n N" and "-N".
+  (cond
+    (and (>= (count args) 2) (= (first args) "-n")) [(or (string->number (nth args 1)) default) (drop 2
+                                                                                                  args)]
+    (and (>= (count args) 1) (starts-with? (first args) "-") (> (string-length (first args)) 1)) [(or (string->number (substring (first args)
+                                                                                                                        1
+                                                                                                                        (string-length (first args))))
+                                                                                                    default) (rest args)]
+    :else [default args]))
+
+(defn cmd-head (args cwd)
+  (let ([n files] (parse-n args 10))
+    (if (empty? files)
+      (err "head: missing file operand")
+      (for-each-file cwd files (fn (a lns) (map (fn (l) (ln l)) (take n lns)))))))
+
+(defn cmd-tail (args cwd)
+  (let ([n files] (parse-n args 10))
+    (if (empty? files)
+      (err "tail: missing file operand")
+      (for-each-file cwd
+        files
+        (fn (a lns)
+          (let (c (count lns))
+            (map (fn (l) (ln l)) (drop (max 0 (- c n)) lns))))))))
+
+(defn word-count (s)
+  (count (filter (fn (w) (not (= w ""))) (string-split (replace s "\t" " ") " "))))
+
+(defn cmd-wc (args cwd)
+  (if (empty? args)
+    (err "wc: missing file operand")
+    (out (fold (fn (acc a)
+                 (match (read-file-lines cwd a)
+                   ([:err m] (append acc (list (ln (str "wc: " m) *f-err*))))
+                   ([:ok lns] (let (text (join "\n" lns)
+                                    spec (str (pad-left (number->string (count lns)) 8)
+                                           (pad-left (number->string (fold + 0 (map word-count lns)))
+                                             8)
+                                           (pad-left (number->string (string-length text)) 8)
+                                           "  "
+                                           a))
+                                (append acc (list (ln spec)))))))
+           nil
+           args))))
+
+(defn grep-file (cwd pattern a multi?)
+  (match (read-file-lines cwd a)
+    ([:err m] (list (ln (str "grep: " m) *f-err*)))
+    ([:ok lns] (let (hits (filter (fn (l) (string-contains? l pattern)) lns))
+                 (map (fn (l) (if multi? (list [(str a ":") *f-dim*] [l nil]) (ln l)))
+                   hits)))))
+
+(defn cmd-grep (args cwd)
+  (if (< (count args) 2)
+    (err "usage: grep PATTERN FILE...")
+    (let (pattern (first args)
+          files (rest args)
+          multi? (> (count files) 1))
+      (out (fold (fn (acc a) (append acc (grep-file cwd pattern a multi?))) nil files)))))
+
+;; ---- mkdir / touch / rm -----------------------------------------------------
+
+(defn try-fs (thunk on-err)
+  (try (thunk) (catch e (ln (str on-err (error-message e)) *f-err*))))
+
+(defn cmd-mkdir (args cwd)
+  (if (empty? args)
+    (err "mkdir: missing operand")
+    (out (filter (fn (x) (not (nil? x)))
+           (map (fn (a) (try-fs (fn () (do (make-dir (resolve-path cwd a)) nil)) "mkdir: "))
+             args)))))
+
+(defn cmd-touch (args cwd)
+  (if (empty? args)
+    (err "touch: missing operand")
+    (out (filter (fn (x) (not (nil? x)))
+           (map (fn (a)
+                  (let (p (resolve-path cwd a))
+                    (if (file-exists? p)
+                      nil
+                      (try-fs (fn () (do (spit p "") nil)) "touch: "))))
+             args)))))
+
+(defn rm-one (cwd recursive? a)
+  (let (p (resolve-path cwd a))
+    (cond
+      (not (file-exists? p)) (ln (str "rm: " a ": No such file or directory") *f-err*)
+      (dir? p) (if recursive?
+                 (try-fs (fn () (do (delete-dir p) nil)) "rm: ")
+                 (ln (str "rm: " a ": is a directory (use -r)") *f-err*))
+      :else (try-fs (fn () (do (delete-file p) nil)) "rm: "))))
+
+(defn cmd-rm (args cwd)
+  (let (recursive? (or (flag? args "-r") (flag? args "-rf") (flag? args "-f"))
+        targets (positional args))
+    (if (empty? targets)
+      (err "rm: missing operand")
+      (out (filter (fn (x) (not (nil? x))) (map (fn (a) (rm-one cwd recursive? a)) targets))))))
+
+;; ---- misc -------------------------------------------------------------------
+
+(defn cmd-echo (args) (out (list (ln (join " " args)))))
+(defn cmd-pwd (cwd) (out (list (ln cwd))))
+(defn cmd-whoami () (out (list (ln (or (getenv "USER") "unknown")))))
+(defn cmd-date () (out (list (ln (str (now) " (ms since epoch)")))))
+
+(defn cmd-history (history)
+  (out (map (fn ([i h]) (list [(pad-left (number->string (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
+         (enumerate history))))
+
+(def *help*
+  [["brood-terminal — an eshell-style shell: Brood is the language, anything that" *f-head*] ["isn't a built-in runs as a real POSIX command via /bin/sh." *f-head*]
+    ["" nil]
+    ["  (brood form)      evaluate Brood, show the value   e.g. (+ 1 2) → 3" nil]
+    ["  *cmd …            force the external POSIX command (skip the built-in)" nil]
+    ["  git / make / …    any non-built-in word runs via /bin/sh (pipes, globs, $VARS)" nil]
+    ["" nil]
+    ["Built-ins (fast, in-process):" *f-head*]
+    ["  ls [-a] [dir]     cd [dir]    pwd     cat/head/tail/wc/grep FILE…" nil]
+    ["  echo  mkdir  touch  rm [-r]   history   clear (Ctrl-L)   whoami  date  exit" nil]
+    ["" nil]
+    ["Keys: Ctrl-T new tab · Ctrl-W close · Alt-1..9 switch · Tab complete" *f-dim*]
+    ["      ↑/↓ history · PgUp/PgDn or wheel scroll · Ctrl-C cancel line" *f-dim*]
+    ["Note: external commands are captured after they finish — no live streaming" *f-dim*]
+    ["      or interactive/full-screen programs yet (vim, top). See ROADMAP.md." *f-dim*]])
+
+(defn cmd-help ()
+  (out (map (fn (sp) (list sp)) *help*)))
+
+;; ---- dispatch ---------------------------------------------------------------
+
+(defn cmd-cd (args cwd)
+  (let (target (if (empty? args) (home) (resolve-path cwd (first args)))
+        label (if (empty? args) "~" (first args)))
+    (cond
+      (not (file-exists? target)) (err (str "cd: " label ": No such file or directory"))
+      (not (dir? target)) (err (str "cd: " label ": Not a directory"))
+      :else {:lines nil :cwd target})))
+
+(defn exec (cmd args ctx)
+  (let (cwd (get ctx :cwd)
+        cols (or (get ctx :cols) 80))
+    (cond
+      (= cmd "ls") (cmd-ls args cwd cols)
+      (= cmd "ll") (cmd-ll args cwd)
+      (= cmd "dir") (cmd-ls args cwd cols)
+      (= cmd "cd") (cmd-cd args cwd)
+      (= cmd "pwd") (cmd-pwd cwd)
+      (= cmd "cat") (cmd-cat args cwd)
+      (= cmd "head") (cmd-head args cwd)
+      (= cmd "tail") (cmd-tail args cwd)
+      (= cmd "wc") (cmd-wc args cwd)
+      (= cmd "grep") (cmd-grep args cwd)
+      (= cmd "echo") (cmd-echo args)
+      (= cmd "mkdir") (cmd-mkdir args cwd)
+      (= cmd "touch") (cmd-touch args cwd)
+      (= cmd "rm") (cmd-rm args cwd)
+      (= cmd "whoami") (cmd-whoami)
+      (= cmd "date") (cmd-date)
+      (= cmd "history") (cmd-history (or (get ctx :history) []))
+      (= cmd "help") (cmd-help)
+      (= cmd "clear") {:lines nil :clear true}
+      (= cmd "exit") {:lines nil :exit true}
+      (= cmd "quit") {:lines nil :exit true}
+      :else {:lines (list (ln (str "brood-sh: command not found: " cmd) *f-err*)
+                      (ln "  type 'help' for the built-in commands" *f-dim*))})))
+
+;; ---- the eshell seam: Brood eval + external POSIX delegation ----------------
+
+(def *builtins*
+  {"ls" true
+   "ll" true
+   "dir" true
+   "cd" true
+   "pwd" true
+   "cat" true
+   "head" true
+   "tail" true
+   "wc" true
+   "grep" true
+   "echo" true
+   "mkdir" true
+   "touch" true
+   "rm" true
+   "whoami" true
+   "date" true
+   "history" true
+   "help" true
+   "clear" true
+   "exit" true
+   "quit" true})
+
+(defn builtin? (cmd) (contains? *builtins* cmd))
+
+(defn shell-meta? (s)
+  "True if `s` uses POSIX shell syntax (pipes, redirection, globs, `$`, …) that a
+built-in can't honour — so the whole line must go to `/bin/sh` instead."
+  (or (string-contains? s "|")
+    (string-contains? s ">")
+    (string-contains? s "<")
+    (string-contains? s ";")
+    (string-contains? s "&")
+    (string-contains? s "$")
+    (string-contains? s "`")
+    (string-contains? s "*")
+    (string-contains? s "?")))
+
+(defn shell-quote (s)
+  "`s` wrapped as a single POSIX shell word (single-quoted, embedded quotes escaped)."
+  (str "'" (replace s "'" "'\\''") "'"))
+
+(defn external-result (output code)
+  ;; map the captured output + exit code into a result map; a non-zero exit gets
+  ;; a dim trailer line.
+  (let (body (if (= output "") nil (map ln (split-lines output))))
+    (if (and (int? code) (not (= code 0)))
+      {:lines (append body (list (ln (str "[exit " code "]") *f-dim*)))}
+      {:lines body})))
+
+(defn run-external (line ctx)
+  "Run `line` as a real POSIX command. We don't parse POSIX ourselves — the line
+is handed to `/bin/sh -c` (run in `ctx`'s cwd, stdout+stderr redirected to a temp
+file), so pipes, globs, redirection and `$VARS` all work. Blocks until the command
+finishes, then the captured output is returned as scrollback lines (no streaming)."
+  (let (cwd (get ctx :cwd)
+        tmp (str "/tmp/brood-term-" (now-ns) ".out")
+        wrapped (str "cd " (shell-quote cwd) " && { " line " ; } > " tmp " 2>&1")
+        code (try (run-process "/bin/sh" ["-c" wrapped]) (catch e -1))
+        output (if (file-exists? tmp) (slurp tmp) ""))
+    (when (file-exists? tmp) (delete-file tmp))
+    (external-result output code)))
+
+(defn run-brood (input)
+  "Evaluate `input` as a Brood expression and show its value (the eshell Lisp seam)."
+  (try
+    (out (list (ln (pr-str (eval-string input)) {:fg :magenta})))
+    (catch e (err (str "error: " (error-message e))))))
+
+(defn run-command (input ctx)
+  "Interpret `input` against `ctx` (`{:cwd :cols :history}`) eshell-style, returning
+a result map (`:lines` plus optional `:cwd` / `:clear` / `:exit`):
+  - `(brood form)`  → evaluated as Brood; the value is shown.
+  - `*cmd …`        → forced external POSIX command, even if `cmd` is a built-in.
+  - a built-in name → the in-process Brood built-in.
+  - anything else   → run as an external POSIX command via `/bin/sh -c`."
+  (let (s (triml input))
+    (cond
+      (blank? s) {:lines nil}
+      (starts-with? s "(") (run-brood s)
+      (starts-with? s "*") (run-external (substring s 1 (string-length s)) ctx)
+      :else (let (toks (tokenize s)
+                  cmd (first toks))
+              (if (and (builtin? cmd) (not (shell-meta? s)))
+                (exec cmd (rest toks) ctx)
+                (run-external s ctx))))))

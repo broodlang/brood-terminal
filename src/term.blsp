@@ -1,0 +1,402 @@
+;; src/term.blsp — the tabbed terminal UI for brood-terminal.
+;;
+;; A `ui-run` (TEA) app over the display seam (ADR-046): a pure `view`
+;; (model + size → a render frame) and an `update` (model + input → model).
+;; The "shell" it drives is `commands.blsp` — there is no bash/PTY behind it
+;; (the runtime has no pseudo-terminal), so each tab is a Brood mini-shell.
+;;
+;; MODEL  {:tabs [tab ...] :active n :done bool :tick-ms ms}
+;; TAB    {:cwd "/…" :lines [span-line ...]   ; scrollback (a VECTOR)
+;;         :input "…" :curs n                 ; the edit line + cursor index
+;;         :history [str ...] :hidx n :stash "…"  ; ↑/↓ recall
+;;         :scroll n}                          ; lines scrolled up from the bottom
+;; A SPAN-LINE is a list of spans `[string face]` (see commands.blsp).
+
+(defmodule term
+  "The tabbed terminal UI for brood-terminal — a `ui-run` app whose tabs each run
+the `commands` mini-shell. `(start)` launches it on the terminal frontend."
+  (:use commands)
+  (:use editor/display)
+  (:use editor/ui))
+
+(def *max-lines* 4000)
+
+(def *alt-tab*
+  {:alt-1 0 :alt-2 1 :alt-3 2 :alt-4 3 :alt-5 4 :alt-6 5 :alt-7 6 :alt-8 7 :alt-9 8})
+
+;; ---- string helpers ---------------------------------------------------------
+
+(defn rindex--at (s ch i)
+  (cond
+    (< i 0) -1
+    (= (char-at s i) ch) i
+    :else (rindex--at s ch (dec i))))
+
+(defn rindex (s ch)
+  "Index of the last occurrence of 1-char `ch` in `s`, or -1."
+  (rindex--at s ch (dec (string-length s))))
+
+(defn basename (p)
+  (let (i (rindex p "/"))
+    (if (< i 0)
+      p
+      (let (b (substring p (+ i 1) (string-length p)))
+        (if (= b "") "/" b)))))
+
+(defn cp--at (a b i)
+  (if (or (>= i (string-length a)) (>= i (string-length b)) (not (= (char-at a i) (char-at b i))))
+    (substring a 0 i)
+    (cp--at a b (+ i 1))))
+
+(defn common-prefix (strs)
+  (reduce (fn (a b) (cp--at a b 0)) (first strs) (rest strs)))
+
+;; ---- tab / model accessors --------------------------------------------------
+
+(defn new-tab (cwd)
+  {:cwd cwd :lines (welcome) :input "" :curs 0 :history [] :hidx nil :stash "" :scroll 0})
+
+(defn welcome ()
+  [(list ["  brood-terminal " *f-head*] ["— a Brood mini-shell (built-ins, no bash)" *f-dim*]) (list ["  type " *f-dim*]
+                                                                                                 ["help" {:fg :cyan
+                                                                                                          :bold true}]
+                                                                                                 [" for commands, or " *f-dim*]
+                                                                                                 ["ls" {:fg :cyan
+                                                                                                        :bold true}]
+                                                                                                 [" to look around." *f-dim*])
+    (list ["" nil])])
+
+(defn active-tab (model) (nth (get model :tabs) (get model :active)))
+
+(defn update-active (model f)
+  (let (i (get model :active))
+    (assoc model :tabs (assoc (get model :tabs) i (f (active-tab model))))))
+
+(defn cap-lines (v)
+  (let (n (count v))
+    (if (> n *max-lines*) (subvec v (- n *max-lines*) n) v)))
+
+(defn prompt-str (tab) (str (short-cwd (get tab :cwd)) " $ "))
+(defn prompt-spans (tab) (list [(prompt-str tab) *f-prompt*]))
+(defn tab-title (tab) (basename (short-cwd (get tab :cwd))))
+
+;; ---- line editing -----------------------------------------------------------
+
+(defn insert-char (t ch)
+  (let (s (get t :input) c (get t :curs))
+    (assoc t
+      :input
+      (str (substring s 0 c) ch (substring s c (string-length s)))
+      :curs
+      (+ c 1)
+      :hidx
+      nil
+      :scroll
+      0)))
+
+(defn backspace (t)
+  (let (s (get t :input) c (get t :curs))
+    (if (= c 0)
+      t
+      (assoc t
+        :input
+        (str (substring s 0 (- c 1)) (substring s c (string-length s)))
+        :curs
+        (- c 1)
+        :hidx
+        nil
+        :scroll
+        0))))
+
+(defn del-forward (t)
+  (let (s (get t :input) c (get t :curs) n (string-length s))
+    (if (>= c n)
+      t
+      (assoc t :input (str (substring s 0 c) (substring s (+ c 1) n)) :scroll 0))))
+
+(defn move-curs (t d)
+  (let (c (get t :curs) n (string-length (get t :input)))
+    (assoc t :curs (max 0 (min n (+ c d))))))
+
+(defn curs-end (t) (assoc t :curs (string-length (get t :input))))
+(defn curs-home (t) (assoc t :curs 0))
+(defn kill-line (t) (assoc t :input "" :curs 0 :hidx nil))
+(defn kill-to-end (t) (assoc t :input (substring (get t :input) 0 (get t :curs))))
+
+;; ---- history recall ---------------------------------------------------------
+
+(defn hist-prev (t)
+  (let (h (get t :history) n (count h) idx (get t :hidx))
+    (if (= n 0)
+      t
+      (let (ni (if (nil? idx) (- n 1) (max 0 (- idx 1)))
+            stash (if (nil? idx) (get t :input) (get t :stash))
+            cmd (nth h ni))
+        (assoc t :hidx ni :stash stash :input cmd :curs (string-length cmd))))))
+
+(defn hist-next (t)
+  (let (h (get t :history) n (count h) idx (get t :hidx))
+    (if (nil? idx)
+      t
+      (if (>= (+ idx 1) n)
+        (assoc t :hidx nil :input (get t :stash) :curs (string-length (get t :stash)))
+        (let (ni (+ idx 1) cmd (nth h ni))
+          (assoc t :hidx ni :input cmd :curs (string-length cmd)))))))
+
+;; ---- Tab completion (filesystem path completion of the trailing token) ------
+
+(defn complete (t)
+  (let (input (get t :input)
+        sp (rindex input " ")
+        head (if (< sp 0) "" (substring input 0 (+ sp 1)))
+        token (if (< sp 0) input (substring input (+ sp 1) (string-length input)))
+        slash (rindex token "/")
+        dirp (if (< slash 0) "" (substring token 0 (+ slash 1)))
+        base (if (< slash 0) token (substring token (+ slash 1) (string-length token)))
+        sdir (resolve-path (get t :cwd) (if (= dirp "") "." dirp))
+        ents (if (dir? sdir) (sort (list-dir sdir)) nil)
+        ms (filter (fn (e) (starts-with? e base)) ents))
+    (cond
+      (or (nil? ms) (empty? ms)) t
+      (= (count ms) 1) (let (m (first ms)
+                             suffix (if (dir? (resolve-path sdir m)) "/" " ")
+                             ni (str head dirp m suffix))
+                         (assoc t :input ni :curs (string-length ni) :hidx nil))
+      :else (let (cp (common-prefix ms)
+                  ni (str head dirp cp)
+                  opts (list [(join "  " ms) *f-dim*]))
+              (assoc t
+                :input
+                ni
+                :curs
+                (string-length ni)
+                :hidx
+                nil
+                :lines
+                (cap-lines (into (get t :lines) [opts])))))))
+
+;; ---- tab management ---------------------------------------------------------
+
+(defn add-tab (model)
+  (let (tabs (get model :tabs))
+    (assoc model
+      :tabs
+      (into tabs [(new-tab (get (active-tab model) :cwd))])
+      :active
+      (count tabs))))
+
+(defn close-tab (model)
+  (let (tabs (get model :tabs) i (get model :active))
+    (if (<= (count tabs) 1)
+      (assoc model :done true)
+      (let (tabs2 (remove-nth tabs i))
+        (assoc model :tabs tabs2 :active (min i (dec (count tabs2))))))))
+
+(defn goto-tab (model n)
+  (if (and (>= n 0) (< n (count (get model :tabs)))) (assoc model :active n) model))
+
+(defn scroll-by (model delta)
+  (update-active model (fn (t) (assoc t :scroll (max 0 (+ (get t :scroll 0) delta))))))
+
+(defn cancel-line (t)
+  (let (echo (append (prompt-spans t) (list [(str (get t :input) "^C") nil])))
+    (assoc t
+      :lines
+      (cap-lines (into (get t :lines) [echo]))
+      :input
+      ""
+      :curs
+      0
+      :hidx
+      nil
+      :scroll
+      0)))
+
+;; ---- submit (run the typed command) -----------------------------------------
+
+(defn submit (model cols rows)
+  (let (i (get model :active)
+        tab (active-tab model)
+        input (get tab :input)
+        cwd (get tab :cwd)
+        echo (append (prompt-spans tab) (list [input nil]))
+        ctx {:cwd cwd :cols cols :history (get tab :history)}
+        res (run-command input ctx))
+    (if (get res :exit)
+      (close-tab model)
+      (let (new-cwd (get res :cwd cwd)
+            outlns (get res :lines)
+            base (if (get res :clear)
+                   []
+                   (into (into (get tab :lines) [echo]) (into [] (or outlns nil))))
+            hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
+            tab2 (assoc tab
+                   :lines
+                   (cap-lines base)
+                   :cwd
+                   new-cwd
+                   :history
+                   hist
+                   :input
+                   ""
+                   :curs
+                   0
+                   :hidx
+                   nil
+                   :stash
+                   ""
+                   :scroll
+                   0))
+        (assoc model :tabs (assoc (get model :tabs) i tab2))))))
+
+;; ---- update (input → model) -------------------------------------------------
+
+(defn handle-mouse (model ev)
+  ;; ev is `[:mouse action button row col mods]`; we only act on the wheel.
+  (let (action (if (>= (count ev) 2) (nth ev 1) nil))
+    (cond
+      (= action :scroll-up) (scroll-by model 3)
+      (= action :scroll-down) (scroll-by model -3)
+      :else model)))
+
+(defn handle-key (model input cols rows)
+  (let (page (max 1 (- rows 4)))
+    (cond
+      (= input :enter) (submit model cols rows)
+      (= input :backspace) (update-active model backspace)
+      (= input :delete) (update-active model del-forward)
+      (= input :left) (update-active model (fn (t) (move-curs t -1)))
+      (= input :right) (update-active model (fn (t) (move-curs t 1)))
+      (= input :home) (update-active model curs-home)
+      (= input :end) (update-active model curs-end)
+      (= input :ctrl-a) (update-active model curs-home)
+      (= input :ctrl-e) (update-active model curs-end)
+      (= input :ctrl-u) (update-active model kill-line)
+      (= input :ctrl-k) (update-active model kill-to-end)
+      (= input :up) (update-active model hist-prev)
+      (= input :down) (update-active model hist-next)
+      (= input :tab) (update-active model complete)
+      (= input :ctrl-l) (update-active model (fn (t) (assoc t :lines [] :scroll 0)))
+      (= input :ctrl-t) (add-tab model)
+      (= input :ctrl-w) (close-tab model)
+      (= input :back-tab) (goto-tab model (dec (get model :active)))
+      (= input :ctrl-c) (update-active model cancel-line)
+      (= input :ctrl-d) (if (= (get (active-tab model) :input) "")
+                          (close-tab model)
+                          (update-active model del-forward))
+      (= input :page-up) (scroll-by model page)
+      (= input :page-down) (scroll-by model (- page))
+      :else model)))
+
+(defn update (model input cols rows)
+  "Fold one input event into the model (the `ui-run` update fn). Vector inputs are
+the mouse (`[:mouse …]`); a GUI window's `[:resize …]` is ignored here and picked
+up via the frontend's `:size` on the next frame."
+  (cond
+    (string? input) (update-active model (fn (t) (insert-char t input)))
+    (and (vector? input) (= (first input) :mouse)) (handle-mouse model input)
+    (vector? input) model
+    (contains? *alt-tab* input) (goto-tab model (get *alt-tab* input))
+    :else (handle-key model input cols rows)))
+
+;; ---- view (model → frame) ---------------------------------------------------
+
+(defn draw-spans--acc (row col spans cols acc)
+  (if (or (empty? spans) (>= col cols))
+    (reverse acc)
+    (let ([s face] (first spans)
+          avail (- cols col)
+          s2 (if (> (string-length s) avail) (substring s 0 avail) s))
+      (if (= s2 "")
+        (draw-spans--acc row col (rest spans) cols acc)
+        (draw-spans--acc row
+          (+ col (string-length s2))
+          (rest spans)
+          cols
+          (cons (text row col s2 face) acc))))))
+
+(defn draw-spans (row col spans cols)
+  "Render op list for `spans` laid left-to-right from `col`, clipped at `cols`."
+  (draw-spans--acc row col spans cols nil))
+
+(defn render-window (window cols)
+  (mapcat (fn ([i line]) (draw-spans (+ 1 i) 0 line cols)) (enumerate window)))
+
+(defn draw-tabs--acc (tabs idx active col cols acc)
+  (if (or (empty? tabs) (>= col cols))
+    (reverse acc)
+    (let (tab (first tabs)
+          label (str " " (+ idx 1) ":" (tab-title tab) " ")
+          face (if (= idx active) {:bg :white :fg :black :bold true} {:bg :blue :fg :white})
+          w (string-length label)
+          shown (if (> (+ col w) cols) (substring label 0 (- cols col)) label))
+      (draw-tabs--acc (rest tabs)
+        (+ idx 1)
+        active
+        (+ col w)
+        cols
+        (cons (text 0 col shown face) acc)))))
+
+(defn draw-tabs (tabs idx active col cols)
+  (draw-tabs--acc tabs idx active col cols nil))
+
+(defn render-tabbar (model cols)
+  (cons (bar 0 cols "" {:face {:bg :blue}})
+    (draw-tabs (get model :tabs) 0 (get model :active) 0 cols)))
+
+(defn render-status (cols rows scroll)
+  (let (hint " Ctrl-T tab · Ctrl-W close · Alt-1-9 switch · Tab complete · PgUp/Dn scroll · help · exit"
+        msg (if (> scroll 0) (str hint "   [scrolled +" scroll "]") hint))
+    (bar (- rows 1) cols msg {:face {:reverse true}})))
+
+(defn view (model cols rows)
+  "Render the model to a frame: tab bar (row 0), scrollback + edit line, status bar."
+  (let (tab (active-tab model)
+        height (max 1 (- rows 2))
+        pstr (prompt-str tab)
+        plen (string-length pstr)
+        input (get tab :input)
+        curs (get tab :curs)
+        ilen (string-length input)
+        visw (max 1 (- cols plen))
+        hoff (if (< curs visw) 0 (+ (- curs visw) 1))
+        shown (substring input hoff (min ilen (+ hoff visw)))
+        pline (list [pstr *f-prompt*] [shown nil])
+        vlines (into (get tab :lines) [pline])
+        total (count vlines)
+        scroll (min (get tab :scroll 0) (max 0 (- total height)))
+        start (max 0 (- total height scroll))
+        window (take height (drop start vlines))
+        body (render-window window cols)
+        curop (if (= scroll 0)
+                (let (row (+ 1 (- (dec total) start))
+                      col (min (dec cols) (+ plen (- curs hoff))))
+                  (if (and (>= row 1) (<= row (- rows 2))) (cursor row col) nil))
+                nil)
+        ops (append (list (clear))
+              (render-tabbar model cols)
+              body
+              (list (render-status cols rows scroll))
+              (if curop (list curop) nil)))
+    (apply frame ops)))
+
+;; ---- entry ------------------------------------------------------------------
+
+(defn fresh-model ()
+  (let (dir (cwd))
+    {:tabs [(new-tab dir)] :active 0 :done false :tick-ms 60000}))
+
+(defn start-term ()
+  "Launch on the terminal frontend (needs a host TTY). Blocks until the last tab
+is closed — Ctrl-W on the final tab, or `exit`."
+  (ui-run (fresh-model) view update *term-display*))
+
+(defn start-gui ()
+  "Launch in a native window (`--features gui` build) — no host terminal needed.
+Close the window's X, Ctrl-W the last tab, or `exit` to quit."
+  (ui-run (fresh-model) view update (gui-display)))
+
+(defn start ()
+  "Launch brood-terminal in a native window (the default — no host TTY required).
+Use `(start-term)` to run inside an existing terminal instead."
+  (start-gui))

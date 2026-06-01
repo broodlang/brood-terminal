@@ -1,19 +1,8 @@
-(defmodule main "The brood-terminal project's entry-point module — wired up as
-the `nest run` entry by default (module `main`, fn `main`)."
-  (:use hello)
-  (:use log))  ; the async, safe logger (std/log)
+;; src/main.blsp — the project entry point (nest run -> main/main).
+(defmodule main
+  "Entry point for brood-terminal: launch the tabbed terminal UI."
+  (:use term))
 
 (defn main ()
-  "Entry point: start the logger and print the project's greeting."
-  ;; `start-logger` spawns a logging process (async — each `log-*` call is
-  ;; fire-and-forget, and one process serialises every write, so lines never
-  ;; interleave). The default backend writes to stdout at :info and up.
-  (start-logger)
-  (log-info "starting brood-terminal")
-  ;; Add backends to fan output out — e.g. to a file, or to a process that
-  ;; owns a buffer (an editor's *Messages*); the line is sent as [:io-write s]:
-  ;;   (add-backend (file-backend "app.log"))
-  ;;   (add-backend (process-backend buffer-pid))
-  ;; To redirect plain `println` the same way, `(require 'io)` and use
-  ;;   (with-out (process-port buffer-pid) (println "…")).
-  (println (greeting)))
+  "Start the tabbed terminal. Blocks until the last tab is closed."
+  (start))
