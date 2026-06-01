@@ -1,0 +1,72 @@
+;; Tests for the command interpreter (commands.blsp).
+(defmodule commands-test (:use commands) (:use test))
+
+(describe "tokenize"
+  (test "splits on whitespace"
+    (assert= (tokenize "ls -a src") (list "ls" "-a" "src")))
+  (test "keeps quoted spans together"
+    (assert= (tokenize "echo \"a b\" c") (list "echo" "a b" "c")))
+  (test "expands a $VAR token"
+    (assert= (tokenize "echo $HOME") (list "echo" (getenv "HOME"))))
+  (test "empty line -> no tokens"
+    (assert= (tokenize "   ") nil)))
+
+(describe "resolve-path"
+  (test "joins a relative path onto cwd"
+    (assert= (resolve-path "/a/b" "c") "/a/b/c"))
+  (test "collapses .."
+    (assert= (resolve-path "/a/b" "../x") "/a/x"))
+  (test "keeps an absolute path"
+    (assert= (resolve-path "/a/b" "/x/y") "/x/y"))
+  (test "expands a leading ~"
+    (assert= (resolve-path "/anywhere" "~") (or (getenv "HOME") "/"))))
+
+(describe "short-cwd"
+  (test "home is ~"
+    (assert= (short-cwd (or (getenv "HOME") "/")) "~"))
+  (test "under home is ~/..."
+    (assert= (short-cwd (str (or (getenv "HOME") "/") "/x")) "~/x")))
+
+(describe "run-command"
+  (test "pwd echoes the cwd"
+    (assert= (run-command "pwd" {:cwd "/tmp" :cols 80})
+      {:lines (list (ln "/tmp"))}))
+  (test "cd into an existing directory returns the new cwd"
+    (let (r (run-command "cd .." {:cwd "/usr/share" :cols 80}))
+      (assert= (get r :cwd) "/usr")))
+  (test "cd into a missing directory errors, leaving cwd unset"
+    (let (r (run-command "cd /no/such/dir/here" {:cwd "/usr" :cols 80}))
+      (is (nil? (get r :cwd)))))
+  (test "echo joins its args"
+    (assert= (run-command "echo hi there" {:cwd "/tmp" :cols 80})
+      {:lines (list (ln "hi there"))}))
+  (test "clear sets the :clear flag"
+    (is (get (run-command "clear" {:cwd "/tmp"}) :clear)))
+  (test "exit sets the :exit flag"
+    (is (get (run-command "exit" {:cwd "/tmp"}) :exit)))
+  (test "unknown command delegates to /bin/sh (nonzero exit trailer)"
+    (let (r (run-command "definitely-not-a-cmd" {:cwd "/tmp" :cols 80})
+          lines (get r :lines)
+          last (first (first (nth lines (dec (count lines))))))
+      (is (string-contains? last "[exit")))))
+
+(describe "eshell dispatch"
+  (test "builtin? knows ls but not git"
+    (is (builtin? "ls"))
+    (is (not (builtin? "git"))))
+  (test "shell-meta? spots a pipe and a glob"
+    (is (shell-meta? "ls | wc -l"))
+    (is (shell-meta? "ls *.blsp"))
+    (is (not (shell-meta? "ls -a src"))))
+  (test "a (brood form) is evaluated"
+    (assert= (run-command "(+ 1 2)" {:cwd "/tmp"})
+      {:lines (list (ln "3" {:fg :magenta}))}))
+  (test "an external command is captured"
+    (let (r (run-command "echo from-sh" {:cwd "/tmp" :cols 80}))
+      (assert= r {:lines (list (ln "from-sh"))})))
+  (test "*prefix forces the external even for a built-in name"
+    (let (r (run-command "*echo forced" {:cwd "/tmp" :cols 80}))
+      (assert= r {:lines (list (ln "forced"))})))
+  (test "a pipe through a built-in name still runs via sh"
+    (let (r (run-command "echo a b c | wc -w" {:cwd "/tmp" :cols 80}))
+      (assert= (trim (first (first (first (get r :lines))))) "3"))))

@@ -1,7 +1,51 @@
 # brood-terminal — guidance for Claude
 
-This is a Brood (`.blsp`) project scaffolded by `nest new`. Replace this stub
-with project-specific guidance — commands, conventions, gotchas.
+A tabbed, full-screen terminal-style app — a **Brood mini-shell**, not a bash
+emulator. Built on the `ui-run` display seam (`docs/brood-for-claude.md` →
+*Interactive apps*).
+
+## Shell model (eshell-style) & why it's not real bash
+
+Brood is the shell language. `commands/run-command` dispatches:
+- `(brood form)` → evaluated as Brood, the value shown;
+- a built-in name with no shell metacharacters → the fast in-process built-in;
+- everything else (or a `*cmd` prefix, or a line with `| > < ; & $ \` * ?`) →
+  handed to `/bin/sh -c` in the tab's cwd, output captured. POSIX
+  compatibility comes from delegating to `sh`, not reimplementing it.
+
+A *faithful* emulator (a live `bash` prompt, `vim`, `htop`) needs a **PTY**, which
+the runtime lacks: `run-process` inherits stdio and blocks, so external commands
+are captured only **after** they exit — no streaming, no interactive/full-screen
+programs. Lifting that is **runtime** work, planned in `ROADMAP.md` (Tier 1: PTY
+builtins + line output; Tier 2: a `vte` cell grid for full-screen apps). The
+input-delivery seam already exists — `gui.rs` posts to a process mailbox and
+`std/ui.blsp`'s `with-events` folds mailbox messages into `ui-run` as input.
+
+## Layout
+
+- `src/commands.blsp` — the command interpreter. `(run-command input ctx)` →
+  a result map `{:lines :cwd? :clear? :exit?}`. Pure over `ctx`
+  (`{:cwd :cols :history}`); the filesystem builtins are its only side channel.
+  Output is **span-lines**: a list of `[string face]` spans (`face` a `display`
+  style map or nil). Commands: ls/ll, cd, pwd, cat, head, tail, wc, grep, echo,
+  mkdir, touch, rm, history, clear, whoami, date, help, exit.
+- `src/term.blsp` — the `ui-run` app: model/`view`/`update`, tabs, line editing,
+  ↑/↓ history, Tab path-completion, scrollback, mouse-wheel + PgUp/PgDn scroll.
+  `(start)` launches it on `*term-display*`.
+- `src/main.blsp` — entry point; `(main)` calls `(term/start)`.
+
+`view`/`update` are pure (model + size → frame / model + input → model), so the
+whole UI is testable without a terminal — see `tests/term_test.blsp`, which
+drives `update` and asserts on the model + that `view` returns a frame.
+
+## Running & testing
+
+- `nest test` — the suite (commands + UI reducer), no TTY needed.
+- `nest run` — launch the terminal (needs a real TTY).
+- `nest run --for 1s` — bounded run for CI/verification. The harness shell has
+  no TTY, so wrap it in a PTY: `script -qec "nest run --for 1s" /dev/null`.
+
+## Original scaffold notes
 
 ## Running
 
