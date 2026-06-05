@@ -458,20 +458,37 @@ finishes, then the captured output is returned as scrollback lines (no streaming
     (out (list (ln (pr-str (eval-string input)) {:fg :magenta})))
     (catch e (err (str "error: " (error-message e))))))
 
+(defn plan-command (input ctx)
+  "Classify `input` *without* running anything slow, so the UI can decide whether to
+run it inline or hand it to a worker process. Returns one of:
+  - `[:inline result-map]` — an instant, in-process command (blank line, a `(brood
+    form)` eval, or a built-in): already evaluated, here is its result map.
+  - `[:external line]`     — a command that must go to `/bin/sh -c` (a `*cmd` prefix,
+    shell metacharacters, or a non-built-in word). `line` is the shell line to run;
+    it can block, so the caller should run it off the UI process (see `run-external`).
+This is the seam that keeps `cd`/built-ins/Brood eval synchronous (they mutate shell
+state or are instant) while external commands become non-blocking background jobs."
+  (let (s (triml input))
+    (cond
+      (blank? s) [:inline {:lines nil}]
+      (starts-with? s "(") [:inline (run-brood s)]
+      (starts-with? s "*") [:external (substring s 1 (string-length s))]
+      :else (let (toks (tokenize s)
+                  cmd (first toks))
+              (if (and (builtin? cmd) (not (shell-meta? s)))
+                [:inline (exec cmd (rest toks) ctx)]
+                [:external s])))))
+
 (defn run-command (input ctx)
   "Interpret `input` against `ctx` (`{:cwd :cols :history}`) eshell-style, returning
-a result map (`:lines` plus optional `:cwd` / `:clear` / `:exit`):
+a result map (`:lines` plus optional `:cwd` / `:clear` / `:exit`). Synchronous — it
+blocks on external commands until they finish. The UI drives commands through
+`plan-command` + `run-external` instead, so a slow command runs in a worker process
+rather than freezing the loop; this all-in-one form is kept for tests and direct use.
   - `(brood form)`  → evaluated as Brood; the value is shown.
   - `*cmd …`        → forced external POSIX command, even if `cmd` is a built-in.
   - a built-in name → the in-process Brood built-in.
   - anything else   → run as an external POSIX command via `/bin/sh -c`."
-  (let (s (triml input))
-    (cond
-      (blank? s) {:lines nil}
-      (starts-with? s "(") (run-brood s)
-      (starts-with? s "*") (run-external (substring s 1 (string-length s)) ctx)
-      :else (let (toks (tokenize s)
-                  cmd (first toks))
-              (if (and (builtin? cmd) (not (shell-meta? s)))
-                (exec cmd (rest toks) ctx)
-                (run-external s ctx))))))
+  (match (plan-command input ctx)
+    ([:inline res] res)
+    ([:external line] (run-external line ctx))))
