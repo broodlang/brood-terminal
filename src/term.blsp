@@ -7,10 +7,16 @@
 ;;
 ;; MODEL  {:tabs [tab ...] :active n :done bool :tick-ms ms}
 ;; TAB    {:cwd "/…" :lines [span-line ...]   ; scrollback (a VECTOR)
-;;         :input "…" :curs n                 ; the edit line + cursor index
-;;         :history [str ...] :hidx n :stash "…"  ; ↑/↓ recall
+;;         :edit <lineedit state>             ; the edit line (editor/lineedit, :path word mode)
+;;         :history [str ...]                 ; oldest-first, for the `history` builtin
 ;;         :scroll n}                          ; lines scrolled up from the bottom
 ;; A SPAN-LINE is a list of spans `[string face]` (see commands.blsp).
+;;
+;; The edit line is a `editor/lineedit` state (text + point + kill-ring + its own
+;; newest-first history + reverse-search), in `:path` word mode so M-b/M-f/C-w/M-d
+;; move and kill one path component at a time. Tab-level keys (Ctrl-T/Alt-1..9/
+;; PgUp/Dn/Tab-complete/Ctrl-L) are intercepted in `handle-key`; everything else
+;; flows through `lineedit--handle`, and its `:done` drives submit / cancel / close.
 
 (defmodule term
   "The tabbed terminal UI for brood-terminal — a `ui-run` app whose tabs each run
@@ -18,6 +24,9 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
   (:use commands)
   (:use editor/display)
   (:use editor/ui))
+
+(require 'editor/lineedit)  ; the pure emacs-style line editor driving the edit line
+(require 'editor/highlight)  ; the stdlib longest-common-prefix helper for Tab completion
 
 (def *max-lines* 4000)
 
@@ -43,18 +52,24 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
       (let (b (substring p (+ i 1) (string-length p)))
         (if (= b "") "/" b)))))
 
-(defn cp--at (a b i)
-  (if (or (>= i (string-length a)) (>= i (string-length b)) (not (= (char-at a i) (char-at b i))))
-    (substring a 0 i)
-    (cp--at a b (+ i 1))))
-
-(defn common-prefix (strs)
-  (reduce (fn (a b) (cp--at a b 0)) (first strs) (rest strs)))
-
 ;; ---- tab / model accessors --------------------------------------------------
 
+(defn fresh-edit (hist)
+  "A fresh edit-line state seeded with newest-first history `hist`, in `:path` word
+mode (M-b/M-f/C-w/M-d move and kill by path component)."
+  (assoc (editor/lineedit/lineedit--init "" "" hist) :word-mode :path))
+
+(defn edit-text (t)
+  "The tab's current edit-line text."
+  (get (get t :edit) :text))
+
+(defn set-line (t s)
+  "The tab with its edit line replaced by `s`, point at the end."
+  (let (e (get t :edit))
+    (assoc t :edit (assoc e :text s :point (string-length s) :hist-idx -1))))
+
 (defn new-tab (cwd)
-  {:cwd cwd :lines (welcome) :input "" :curs 0 :history [] :hidx nil :stash "" :scroll 0})
+  {:cwd cwd :lines (welcome) :edit (fresh-edit '()) :history [] :scroll 0})
 
 (defn welcome ()
   [(list ["  brood-terminal " *f-head*] ["— a Brood mini-shell (built-ins, no bash)" *f-dim*]) (list ["  type " *f-dim*]
@@ -80,73 +95,10 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 (defn prompt-spans (tab) (list [(prompt-str tab) *f-prompt*]))
 (defn tab-title (tab) (basename (short-cwd (get tab :cwd))))
 
-;; ---- line editing -----------------------------------------------------------
-
-(defn insert-char (t ch)
-  (let (s (get t :input) c (get t :curs))
-    (assoc t
-      :input
-      (str (substring s 0 c) ch (substring s c (string-length s)))
-      :curs
-      (+ c 1)
-      :hidx
-      nil
-      :scroll
-      0)))
-
-(defn backspace (t)
-  (let (s (get t :input) c (get t :curs))
-    (if (= c 0)
-      t
-      (assoc t
-        :input
-        (str (substring s 0 (- c 1)) (substring s c (string-length s)))
-        :curs
-        (- c 1)
-        :hidx
-        nil
-        :scroll
-        0))))
-
-(defn del-forward (t)
-  (let (s (get t :input) c (get t :curs) n (string-length s))
-    (if (>= c n)
-      t
-      (assoc t :input (str (substring s 0 c) (substring s (+ c 1) n)) :scroll 0))))
-
-(defn move-curs (t d)
-  (let (c (get t :curs) n (string-length (get t :input)))
-    (assoc t :curs (max 0 (min n (+ c d))))))
-
-(defn curs-end (t) (assoc t :curs (string-length (get t :input))))
-(defn curs-home (t) (assoc t :curs 0))
-(defn kill-line (t) (assoc t :input "" :curs 0 :hidx nil))
-(defn kill-to-end (t) (assoc t :input (substring (get t :input) 0 (get t :curs))))
-
-;; ---- history recall ---------------------------------------------------------
-
-(defn hist-prev (t)
-  (let (h (get t :history) n (count h) idx (get t :hidx))
-    (if (= n 0)
-      t
-      (let (ni (if (nil? idx) (- n 1) (max 0 (- idx 1)))
-            stash (if (nil? idx) (get t :input) (get t :stash))
-            cmd (nth h ni))
-        (assoc t :hidx ni :stash stash :input cmd :curs (string-length cmd))))))
-
-(defn hist-next (t)
-  (let (h (get t :history) n (count h) idx (get t :hidx))
-    (if (nil? idx)
-      t
-      (if (>= (+ idx 1) n)
-        (assoc t :hidx nil :input (get t :stash) :curs (string-length (get t :stash)))
-        (let (ni (+ idx 1) cmd (nth h ni))
-          (assoc t :hidx ni :input cmd :curs (string-length cmd)))))))
-
 ;; ---- Tab completion (filesystem path completion of the trailing token) ------
 
 (defn complete (t)
-  (let (input (get t :input)
+  (let (input (edit-text t)
         sp (rindex input " ")
         head (if (< sp 0) "" (substring input 0 (+ sp 1)))
         token (if (< sp 0) input (substring input (+ sp 1) (string-length input)))
@@ -159,19 +111,11 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
     (cond
       (or (nil? ms) (empty? ms)) t
       (= (count ms) 1) (let (m (first ms)
-                             suffix (if (dir? (resolve-path sdir m)) "/" " ")
-                             ni (str head dirp m suffix))
-                         (assoc t :input ni :curs (string-length ni) :hidx nil))
-      :else (let (cp (common-prefix ms)
-                  ni (str head dirp cp)
+                             suffix (if (dir? (resolve-path sdir m)) "/" " "))
+                         (set-line t (str head dirp m suffix)))
+      :else (let (cp (editor/highlight/common-prefix ms)
                   opts (list [(join "  " ms) *f-dim*]))
-              (assoc t
-                :input
-                ni
-                :curs
-                (string-length ni)
-                :hidx
-                nil
+              (assoc (set-line t (str head dirp cp))
                 :lines
                 (cap-lines (into (get t :lines) [opts])))))))
 
@@ -199,16 +143,12 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
   (update-active model (fn (t) (assoc t :scroll (max 0 (+ (get t :scroll 0) delta))))))
 
 (defn cancel-line (t)
-  (let (echo (append (prompt-spans t) (list [(str (get t :input) "^C") nil])))
+  (let (echo (append (prompt-spans t) (list [(str (edit-text t) "^C") nil])))
     (assoc t
       :lines
       (cap-lines (into (get t :lines) [echo]))
-      :input
-      ""
-      :curs
-      0
-      :hidx
-      nil
+      :edit
+      (fresh-edit (get (get t :edit) :hist))
       :scroll
       0)))
 
@@ -217,7 +157,7 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 (defn submit (model cols rows)
   (let (i (get model :active)
         tab (active-tab model)
-        input (get tab :input)
+        input (edit-text tab)
         cwd (get tab :cwd)
         echo (append (prompt-spans tab) (list [input nil]))
         ctx {:cwd cwd :cols cols :history (get tab :history)}
@@ -237,14 +177,9 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
                    new-cwd
                    :history
                    hist
-                   :input
-                   ""
-                   :curs
-                   0
-                   :hidx
-                   nil
-                   :stash
-                   ""
+                   :edit
+                   (fresh-edit (editor/lineedit/lineedit--remember (get (get tab :edit) :hist)
+                                 input))
                    :scroll
                    0))
         (assoc model :tabs (assoc (get model :tabs) i tab2))))))
@@ -259,41 +194,40 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
       (= action :scroll-down) (scroll-by model -3)
       :else model)))
 
+(defn edit-key (model input cols rows)
+  "Fold one key into the active tab's edit line via lineedit — typing, motion,
+kill/yank (path-component word ops), ↑/↓ history, C-r reverse-search. `:done`
+drives the shell: `:submit` (Enter) runs the line, `:cancel` (C-c) echoes `^C`
+and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
+  (let (edit (editor/lineedit/lineedit--handle (get (active-tab model) :edit) input)
+        done (get edit :done))
+    (cond
+      (= done :submit) (submit model cols rows)
+      (= done :cancel) (update-active model cancel-line)
+      (= done :eof) (close-tab model)
+      :else (update-active model (fn (t) (assoc t :edit edit :scroll 0))))))
+
 (defn handle-key (model input cols rows)
   (let (page (max 1 (- rows 4)))
     (cond
-      (= input :enter) (submit model cols rows)
-      (= input :backspace) (update-active model backspace)
-      (= input :delete) (update-active model del-forward)
-      (= input :left) (update-active model (fn (t) (move-curs t -1)))
-      (= input :right) (update-active model (fn (t) (move-curs t 1)))
-      (= input :home) (update-active model curs-home)
-      (= input :end) (update-active model curs-end)
-      (= input :ctrl-a) (update-active model curs-home)
-      (= input :ctrl-e) (update-active model curs-end)
-      (= input :ctrl-u) (update-active model kill-line)
-      (= input :ctrl-k) (update-active model kill-to-end)
-      (= input :up) (update-active model hist-prev)
-      (= input :down) (update-active model hist-next)
       (= input :tab) (update-active model complete)
       (= input :ctrl-l) (update-active model (fn (t) (assoc t :lines [] :scroll 0)))
       (= input :ctrl-t) (add-tab model)
-      (= input :ctrl-w) (close-tab model)
       (= input :back-tab) (goto-tab model (dec (get model :active)))
-      (= input :ctrl-c) (update-active model cancel-line)
-      (= input :ctrl-d) (if (= (get (active-tab model) :input) "")
-                          (close-tab model)
-                          (update-active model del-forward))
       (= input :page-up) (scroll-by model page)
       (= input :page-down) (scroll-by model (- page))
-      :else model)))
+      ;; raw-mode Enter aliases: a piped/scripted `\n` arrives as :ctrl-j (and `\r`
+      ;; can arrive as :ctrl-m) — treat them as Enter so scripted input submits.
+      (or (= input :ctrl-j) (= input :ctrl-m)) (edit-key model :enter cols rows)
+      :else (edit-key model input cols rows))))
 
 (defn update (model input cols rows)
   "Fold one input event into the model (the `ui-run` update fn). Vector inputs are
 the mouse (`[:mouse …]`); a GUI window's `[:resize …]` is ignored here and picked
-up via the frontend's `:size` on the next frame."
+up via the frontend's `:size` on the next frame. Tab-level keys (Ctrl-T, Alt-1..9,
+Tab, Ctrl-L, PgUp/Dn) are handled here; everything else — including Ctrl-W, which
+now kills a path component like every shell — drives the lineedit edit line."
   (cond
-    (string? input) (update-active model (fn (t) (insert-char t input)))
     (and (vector? input) (= (first input) :mouse)) (handle-mouse model input)
     (vector? input) model
     (contains? *alt-tab* input) (goto-tab model (get *alt-tab* input))
@@ -345,18 +279,20 @@ up via the frontend's `:size` on the next frame."
     (draw-tabs (get model :tabs) 0 (get model :active) 0 cols)))
 
 (defn render-status (cols rows scroll)
-  (let (hint " Ctrl-T tab · Ctrl-W close · Alt-1-9 switch · Tab complete · PgUp/Dn scroll · help · exit"
+  (let (hint " Ctrl-T tab · Ctrl-D close · Alt-1-9 switch · Tab complete · ↑/C-r history · PgUp/Dn scroll · help · exit"
         msg (if (> scroll 0) (str hint "   [scrolled +" scroll "]") hint))
     (bar (- rows 1) cols msg {:face {:reverse true}})))
 
 (defn view (model cols rows)
-  "Render the model to a frame: tab bar (row 0), scrollback + edit line, status bar."
+  "Render the model to a frame: tab bar (row 0), scrollback + edit line, status bar.
+While reverse-searching, the edit line shows lineedit's `(reverse-i-search)` prompt."
   (let (tab (active-tab model)
         height (max 1 (- rows 2))
-        pstr (prompt-str tab)
+        search-p (editor/lineedit/lineedit--display-prompt (get tab :edit))
+        pstr (if (= search-p "") (prompt-str tab) search-p)
         plen (string-length pstr)
-        input (get tab :input)
-        curs (get tab :curs)
+        input (edit-text tab)
+        curs (get (get tab :edit) :point)
         ilen (string-length input)
         visw (max 1 (- cols plen))
         hoff (if (< curs visw) 0 (+ (- curs visw) 1))

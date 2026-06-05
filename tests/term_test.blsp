@@ -1,32 +1,62 @@
-;; Tests for the terminal UI reducer + renderer (term.blsp).
+;; Tests for the terminal UI reducer + renderer (term.blsp). The edit line is an
+;; `editor/lineedit` state on the tab's `:edit` (in `:path` word mode), so editing
+;; is driven through `update` with key inputs and asserted via `edit-text`.
 (defmodule term-test (:use term) (:use test))
 
 (defn type-str (m s) (fold (fn (acc ch) (update acc ch 80 24)) m (string->list s)))
+(defn feed (m keys) (fold (fn (acc k) (update acc k 80 24)) m keys))
 (defn fresh () {:tabs [(new-tab "/a/b")] :active 0 :done false})
+(defn line (m) (edit-text (active-tab m)))
 
 (describe "line editing"
-  (test "typing accumulates into :input"
-    (assert= (get (active-tab (type-str (fresh) "hello")) :input) "hello"))
+  (test "typing accumulates into the edit line"
+    (assert= (line (type-str (fresh) "hello")) "hello"))
   (test "backspace deletes before the cursor"
-    (let (m (update (type-str (fresh) "hi") :backspace 80 24))
-      (assert= (get (active-tab m) :input) "h")))
+    (assert= (line (update (type-str (fresh) "hi") :backspace 80 24)) "h"))
   (test "left then backspace deletes mid-line"
-    (let (m (update (update (type-str (fresh) "ab") :left 80 24) :backspace 80 24))
-      (assert= (get (active-tab m) :input) "b"))))
+    (assert= (line (feed (type-str (fresh) "ab") [:left :backspace])) "b"))
+  (test "C-a then C-e jump to the line's ends"
+    (let (m (feed (type-str (fresh) "bc") [:ctrl-a "a"]))
+      (assert= (line m) "abc")
+      (assert= (get (get (active-tab m) :edit) :point) 1)))
+  (test "kill (C-u) then yank (C-y) round-trips the line"
+    (assert= (line (feed (type-str (fresh) "cat /tmp/x") [:ctrl-u :ctrl-y])) "cat /tmp/x")))
+
+(describe "path word mode (:word-mode :path)"
+  (test "M-b moves back one path component, not the whole path"
+    (let (m (feed (type-str (fresh) "cat /usr/share/dict") [:alt-b]))
+      (assert= (get (get (active-tab m) :edit) :point) (string-length "cat /usr/share/"))))
+  (test "C-w kills only the trailing path component"
+    (assert= (line (feed (type-str (fresh) "cat /usr/share") [:ctrl-w])) "cat /usr/")))
 
 (describe "submit + history"
-  (test "enter clears input and records history"
+  (test "enter clears the edit line and records history"
     (let (m (update (type-str (fresh) "pwd") :enter 80 24)
           t (active-tab m))
-      (assert= (get t :input) "")
+      (assert= (edit-text t) "")
       (assert= (get t :history) ["pwd"])))
   (test "up-arrow recalls the last command"
-    (let (m (update (update (type-str (fresh) "pwd") :enter 80 24) :up 80 24))
-      (assert= (get (active-tab m) :input) "pwd")))
+    (assert= (line (feed (type-str (fresh) "pwd") [:enter :up])) "pwd"))
+  (test "C-r reverse-search recalls a matching command"
+    (let (m (feed (type-str (feed (type-str (fresh) "pwd") [:enter]) "echo hi")
+              [:enter :ctrl-r "p"]))
+      (assert= (line m) "pwd")))
   (test "cd updates the tab cwd"
     (let (m0 {:tabs [(new-tab "/usr/share")] :active 0 :done false}
           m (update (type-str m0 "cd ..") :enter 80 24))
       (assert= (get (active-tab m) :cwd) "/usr"))))
+
+(describe "cancel + close"
+  (test "ctrl-c echoes ^C and re-prompts with the line cleared"
+    (let (m (update (type-str (fresh) "oops") :ctrl-c 80 24))
+      (assert= (line m) "")
+      (is (not (get m :done)))))
+  (test "ctrl-d on an empty line closes the last tab (quit)"
+    (is (get (update (fresh) :ctrl-d 80 24) :done)))
+  (test "ctrl-d mid-line deletes forward instead of closing"
+    (let (m (feed (type-str (fresh) "ab") [:ctrl-a :ctrl-d]))
+      (is (not (get m :done)))
+      (assert= (line m) "b"))))
 
 (describe "tabs"
   (test "ctrl-t opens and focuses a new tab"
@@ -34,14 +64,17 @@
       (assert= (count (get m :tabs)) 2)
       (assert= (get m :active) 1)))
   (test "alt-1 switches to the first tab"
-    (let (m (update (update (fresh) :ctrl-t 80 24) :alt-1 80 24))
+    (let (m (feed (fresh) [:ctrl-t :alt-1]))
       (assert= (get m :active) 0)))
-  (test "ctrl-w on the last tab quits"
-    (is (get (update (fresh) :ctrl-w 80 24) :done)))
-  (test "ctrl-w with two tabs closes one"
-    (let (m (update (update (fresh) :ctrl-t 80 24) :ctrl-w 80 24))
+  (test "ctrl-d with two tabs closes one"
+    (let (m (feed (fresh) [:ctrl-t :ctrl-d]))
       (assert= (count (get m :tabs)) 1)
-      (is (not (get m :done))))))
+      (is (not (get m :done)))))
+  (test "ctrl-w kills a word, it no longer closes the tab"
+    (let (m (update (type-str (fresh) "word") :ctrl-w 80 24))
+      (assert= (count (get m :tabs)) 1)
+      (is (not (get m :done)))
+      (assert= (line m) ""))))
 
 (describe "view"
   (test "renders a frame (vector of ops)"
