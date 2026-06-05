@@ -340,8 +340,9 @@ unlike `partition`)."
     ["  ls [-a] [dir]     cd [dir]    pwd     cat/head/tail/wc/grep FILE…" nil]
     ["  echo  mkdir  touch  rm [-r]   history   clear (Ctrl-L)   whoami  date  exit" nil]
     ["" nil]
-    ["Keys: Ctrl-T new tab · Ctrl-W close · Alt-1..9 switch · Tab complete" *f-dim*]
-    ["      ↑/↓ history · PgUp/PgDn or wheel scroll · Ctrl-C cancel line" *f-dim*]
+    ["Keys: Ctrl-T new tab · Ctrl-D (empty line) close · Alt-1..9 switch · Tab complete" *f-dim*]
+    ["      ↑/↓ history · C-r search · C-a/C-e/M-b/M-f move · C-w/C-u/C-k kill · C-y yank" *f-dim*]
+    ["      PgUp/PgDn or wheel scroll · Ctrl-C cancel line" *f-dim*]
     ["Note: external commands are captured after they finish — no live streaming" *f-dim*]
     ["      or interactive/full-screen programs yet (vim, top). See ROADMAP.md." *f-dim*]])
 
