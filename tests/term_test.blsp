@@ -76,6 +76,55 @@
       (is (not (get m :done)))
       (assert= (line m) ""))))
 
+(defn last-line-text (m)
+  ;; first span's string of the active tab's last scrollback line
+  (let (lns (get (active-tab m) :lines))
+    (first (nth (nth lns (dec (count lns))) 0))))
+
+(defn model-with-job (jid pid)
+  {:tabs [(assoc (new-tab "/x") :jobs (list {:id jid :pid pid :line "sleep 1"}))]
+   :active 0
+   :done false
+   :tick-ms 120
+   :next-job (inc jid)
+   :spin 0
+   :now 0})
+
+(describe "background jobs"
+  (test "an external command becomes a background job, not a blocking call"
+    ;; `$` is a shell metacharacter, so this goes external → spawns a worker.
+    (let (m (update (type-str (fresh-model) "echo $HOME") :enter 80 24)
+          t (active-tab m))
+      (assert= (count (get t :jobs)) 1)
+      (assert= (get (first (get t :jobs)) :line) "echo $HOME")
+      (assert= (edit-text t) "")  ; prompt is live again immediately
+      (assert= (get t :history) ["echo $HOME"])
+      (assert= (get m :tick-ms) 120)))  ; beat speeds up while running
+  (test "a built-in stays inline (runs synchronously, no job)"
+    (let (m (update (type-str (fresh-model) "pwd") :enter 80 24))
+      (is (empty? (get (active-tab m) :jobs)))))
+  (test "a finished worker's :cmd-done folds output in and clears the job"
+    (let (m (update (model-with-job 7 (self))
+              [:cmd-done 7 {:lines (list (list ["job output" nil]))}]
+              80
+              24)
+          t (active-tab m))
+      (is (empty? (get t :jobs)))
+      (assert= (last-line-text m) "job output")
+      (assert= (get m :tick-ms) 60000)))  ; back to idle when nothing runs
+  (test ":cmd-done for an unknown job id is ignored"
+    (let (m (model-with-job 7 (self)))
+      (assert= (count (get (active-tab (update m [:cmd-done 99 {:lines nil}] 80 24)) :jobs)) 1)))
+  (test ":tick advances the spinner frame"
+    (assert= (get (update (model-with-job 7 (self)) :tick 80 24) :spin) 1))
+  (test "ctrl-c cancels running jobs instead of the edit line"
+    (let (p (spawn (sleep 100000))
+          m (update (model-with-job 1 p) :ctrl-c 80 24))
+      (is (empty? (get (active-tab m) :jobs)))
+      (is (not (get m :done)))))
+  (test "view renders running-job spinners without crashing"
+    (is (vector? (view (model-with-job 7 (self)) 80 24)))))
+
 (describe "view"
   (test "renders a frame (vector of ops)"
     (is (vector? (view (fresh) 80 24))))

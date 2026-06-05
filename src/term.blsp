@@ -5,12 +5,16 @@
 ;; The "shell" it drives is `commands.blsp` — there is no bash/PTY behind it
 ;; (the runtime has no pseudo-terminal), so each tab is a Brood mini-shell.
 ;;
-;; MODEL  {:tabs [tab ...] :active n :done bool :tick-ms ms}
+;; MODEL  {:tabs [tab ...] :active n :done bool :tick-ms ms
+;;         :next-job n :spin n :now ms}       ; background-job counter + spinner/clock
 ;; TAB    {:cwd "/…" :lines [span-line ...]   ; scrollback (a VECTOR)
 ;;         :edit <lineedit state>             ; the edit line (editor/lineedit, :path word mode)
 ;;         :history [str ...]                 ; oldest-first, for the `history` builtin
-;;         :scroll n}                          ; lines scrolled up from the bottom
+;;         :scroll n                          ; lines scrolled up from the bottom
+;;         :jobs (job ...)}                    ; running background commands (see below)
 ;; A SPAN-LINE is a list of spans `[string face]` (see commands.blsp).
+;; A JOB is `{:id n :pid <worker> :line "…" :started ms}` — an external command
+;; running in a spawned process; its `[:cmd-done id result]` reply lands as input.
 ;;
 ;; The edit line is a `editor/lineedit` state (text + point + kill-ring + its own
 ;; newest-first history + reverse-search), in `:path` word mode so M-b/M-f/C-w/M-d
@@ -32,6 +36,22 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 
 (def *alt-tab*
   {:alt-1 0 :alt-2 1 :alt-3 2 :alt-4 3 :alt-5 4 :alt-6 5 :alt-7 6 :alt-8 7 :alt-9 8})
+
+;; ---- background jobs --------------------------------------------------------
+;; External commands block (the runtime has no PTY; `run-process` waits for the
+;; child to exit), so running them on the UI process would freeze the whole app.
+;; Instead `submit` spawns a worker green process per external command; the worker
+;; runs it and `send`s `[:cmd-done jid result]` back to the UI process's mailbox,
+;; which `with-jobs` surfaces as loop input (the `with-events` idiom). So commands
+;; run concurrently in the background, Claude-CLI style: the prompt stays live,
+;; each running job shows a spinner + elapsed time, and its output lands when done.
+
+(def *spinner* ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
+(def *f-run* {:fg :yellow :bold true})
+(def *idle-tick* 60000)  ; poll beat when nothing is running (just the refresh tick)
+(def *busy-tick* 120)  ; while a job runs: animate the spinner + drain the mailbox
+
+(defn spin-frame (spin) (nth *spinner* (mod spin (count *spinner*))))
 
 ;; ---- string helpers ---------------------------------------------------------
 
@@ -69,7 +89,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
     (assoc t :edit (assoc e :text s :point (string-length s) :hist-idx -1))))
 
 (defn new-tab (cwd)
-  {:cwd cwd :lines (welcome) :edit (fresh-edit '()) :history [] :scroll 0})
+  {:cwd cwd :lines (welcome) :edit (fresh-edit '()) :history [] :scroll 0 :jobs '()})
 
 (defn welcome ()
   [(list ["  brood-terminal " *f-head*] ["— a Brood mini-shell (built-ins, no bash)" *f-dim*]) (list ["  type " *f-dim*]
@@ -152,37 +172,128 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
       :scroll
       0)))
 
+;; ---- background-job bookkeeping ---------------------------------------------
+
+(defn any-jobs? (model)
+  "True if any tab has a running background job — drives the poll beat."
+  (fold (fn (acc t) (or acc (not (empty? (get t :jobs))))) false (get model :tabs)))
+
+(defn refresh-tick (model)
+  "Set the poll beat: fast while a job runs (spinner + mailbox drain), idle otherwise."
+  (assoc model :tick-ms (if (any-jobs? model) *busy-tick* *idle-tick*)))
+
+(defn job-has? (jobs jid)
+  "True if `jobs` contains a job with id `jid`."
+  (not (empty? (filter (fn (j) (= (get j :id) jid)) jobs))))
+
+(defn tab-index-with-job (model jid)
+  "Index of the tab whose `:jobs` carries job id `jid`, or nil. Found by id (not by
+the active tab) because the job may finish after the user switched/added tabs."
+  (let (hit (filter (fn ([_ t]) (job-has? (get t :jobs) jid)) (enumerate (get model :tabs))))
+    (if (empty? hit) nil (first (first hit)))))
+
+(defn job-done (model ev)
+  "Fold a worker's `[:cmd-done jid result]` reply into the model: drop the job from its
+tab and append the captured output. A non-existent jid (cancelled tab) is ignored."
+  (let (jid (nth ev 1)
+        result (nth ev 2)
+        ti (tab-index-with-job model jid))
+    (if (nil? ti)
+      model
+      (let (tabs (get model :tabs)
+            tab (nth tabs ti)
+            jobs2 (filter (fn (j) (not (= (get j :id) jid))) (get tab :jobs))
+            outlns (get result :lines)
+            lines2 (cap-lines (into (get tab :lines) (into [] (or outlns nil))))
+            tab2 (assoc tab :jobs jobs2 :lines lines2))
+        (refresh-tick (assoc model :tabs (assoc tabs ti tab2)))))))
+
+(defn on-tick (model)
+  "The refresh beat: advance the spinner frame and stamp `:now` so the elapsed-time
+readout next to a running job ticks up. `view` reads `:now`/`:spin` (stays pure)."
+  (assoc model :spin (inc (get model :spin 0)) :now (now)))
+
+(defn cancel-jobs (model)
+  "Ctrl-C with jobs running in the active tab: kill the worker processes and note the
+cancellation. (The orphaned `/bin/sh` child keeps running detached — no PTY to signal
+it; its output is just discarded. See ROADMAP.md.)"
+  (let (i (get model :active)
+        tab (active-tab model)
+        jobs (get tab :jobs))
+    (doseq (j jobs) (exit (get j :pid) :kill))
+    (let (notes (map (fn (j) (list ["^C " *f-dim*] [(get j :line) *f-dim*])) jobs)
+          lines2 (cap-lines (into (get tab :lines) (into [] notes)))
+          tab2 (assoc tab :jobs '() :lines lines2 :scroll 0))
+      (refresh-tick (assoc model :tabs (assoc (get model :tabs) i tab2))))))
+
 ;; ---- submit (run the typed command) -----------------------------------------
 
+(defn submit-inline (model i tab input res echo)
+  "Apply an instant command's result (`cd`/built-in/Brood eval) to the model — the
+original synchronous path: honour `:exit`/`:clear`/`:cwd`, append output, re-prompt."
+  (if (get res :exit)
+    (close-tab model)
+    (let (cwd (get tab :cwd)
+          new-cwd (get res :cwd cwd)
+          outlns (get res :lines)
+          base (if (get res :clear)
+                 []
+                 (into (into (get tab :lines) [echo]) (into [] (or outlns nil))))
+          hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
+          tab2 (assoc tab
+                 :lines
+                 (cap-lines base)
+                 :cwd
+                 new-cwd
+                 :history
+                 hist
+                 :edit
+                 (fresh-edit (editor/lineedit/lineedit--remember (get (get tab :edit) :hist) input))
+                 :scroll
+                 0))
+      (assoc model :tabs (assoc (get model :tabs) i tab2)))))
+
+(defn submit-external (model i tab input line ctx echo)
+  "Launch an external command as a background job: echo it now, spawn a worker that
+runs it off the UI process and `send`s `[:cmd-done jid result]` back, and re-prompt
+immediately so the user keeps working while it runs."
+  (let (jid (get model :next-job)
+        me (self)
+        pid (spawn (send me [:cmd-done jid (run-external line ctx)]))
+        job {:id jid :pid pid :line line :started (now)}
+        hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
+        tab2 (assoc tab
+               :lines
+               (cap-lines (into (get tab :lines) [echo]))
+               :jobs
+               (cons job (get tab :jobs))
+               :history
+               hist
+               :edit
+               (fresh-edit (editor/lineedit/lineedit--remember (get (get tab :edit) :hist) input))
+               :scroll
+               0))
+    (refresh-tick (assoc model
+                    :tabs
+                    (assoc (get model :tabs) i tab2)
+                    :next-job
+                    (inc jid)
+                    :now
+                    (now)))))
+
 (defn submit (model cols rows)
+  "Run the typed line. Built-ins / `cd` / `(brood …)` run inline (instant, and `cd`
+mutates shell state that must stay ordered); external commands become background
+jobs so a slow one never freezes the UI."
   (let (i (get model :active)
         tab (active-tab model)
         input (edit-text tab)
         cwd (get tab :cwd)
         echo (append (prompt-spans tab) (list [input nil]))
-        ctx {:cwd cwd :cols cols :history (get tab :history)}
-        res (run-command input ctx))
-    (if (get res :exit)
-      (close-tab model)
-      (let (new-cwd (get res :cwd cwd)
-            outlns (get res :lines)
-            base (if (get res :clear)
-                   []
-                   (into (into (get tab :lines) [echo]) (into [] (or outlns nil))))
-            hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
-            tab2 (assoc tab
-                   :lines
-                   (cap-lines base)
-                   :cwd
-                   new-cwd
-                   :history
-                   hist
-                   :edit
-                   (fresh-edit (editor/lineedit/lineedit--remember (get (get tab :edit) :hist)
-                                 input))
-                   :scroll
-                   0))
-        (assoc model :tabs (assoc (get model :tabs) i tab2))))))
+        ctx {:cwd cwd :cols cols :history (get tab :history)})
+    (match (plan-command input ctx)
+      ([:inline res] (submit-inline model i tab input res echo))
+      ([:external line] (submit-external model i tab input line ctx echo)))))
 
 ;; ---- update (input → model) -------------------------------------------------
 
@@ -203,7 +314,9 @@ and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
         done (get edit :done))
     (cond
       (= done :submit) (submit model cols rows)
-      (= done :cancel) (update-active model cancel-line)
+      (= done :cancel) (if (empty? (get (active-tab model) :jobs))
+                         (update-active model cancel-line)
+                         (cancel-jobs model))
       (= done :eof) (close-tab model)
       :else (update-active model (fn (t) (assoc t :edit edit :scroll 0))))))
 
@@ -222,12 +335,16 @@ and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
       :else (edit-key model input cols rows))))
 
 (defn update (model input cols rows)
-  "Fold one input event into the model (the `ui-run` update fn). Vector inputs are
-the mouse (`[:mouse …]`); a GUI window's `[:resize …]` is ignored here and picked
-up via the frontend's `:size` on the next frame. Tab-level keys (Ctrl-T, Alt-1..9,
-Tab, Ctrl-L, PgUp/Dn) are handled here; everything else — including Ctrl-W, which
-now kills a path component like every shell — drives the lineedit edit line."
+  "Fold one input event into the model (the `ui-run` update fn). `:tick` advances the
+spinner; `[:cmd-done jid result]` is a finished background command (a worker process's
+mailbox reply, surfaced as input by `with-jobs`). Vector inputs are otherwise the mouse
+(`[:mouse …]`); a GUI window's `[:resize …]` is ignored here and picked up via the
+frontend's `:size` on the next frame. Tab-level keys (Ctrl-T, Alt-1..9, Tab, Ctrl-L,
+PgUp/Dn) are handled here; everything else — including Ctrl-W, which now kills a path
+component like every shell — drives the lineedit edit line."
   (cond
+    (= input :tick) (on-tick model)
+    (and (vector? input) (= (first input) :cmd-done)) (job-done model input)
     (and (vector? input) (= (first input) :mouse)) (handle-mouse model input)
     (vector? input) model
     (contains? *alt-tab* input) (goto-tab model (get *alt-tab* input))
@@ -256,36 +373,57 @@ now kills a path component like every shell — drives the lineedit edit line."
 (defn render-window (window cols)
   (mapcat (fn ([i line]) (draw-spans (+ 1 i) 0 line cols)) (enumerate window)))
 
-(defn draw-tabs--acc (tabs idx active col cols acc)
+(defn draw-tabs--acc (tabs idx active spin col cols acc)
   (if (or (empty? tabs) (>= col cols))
     (reverse acc)
     (let (tab (first tabs)
-          label (str " " (+ idx 1) ":" (tab-title tab) " ")
+          busy (if (empty? (get tab :jobs)) "" (str " " (spin-frame spin)))
+          label (str " " (+ idx 1) ":" (tab-title tab) busy " ")
           face (if (= idx active) {:bg :white :fg :black :bold true} {:bg :blue :fg :white})
           w (string-length label)
           shown (if (> (+ col w) cols) (substring label 0 (- cols col)) label))
       (draw-tabs--acc (rest tabs)
         (+ idx 1)
         active
+        spin
         (+ col w)
         cols
         (cons (text 0 col shown face) acc)))))
 
-(defn draw-tabs (tabs idx active col cols)
-  (draw-tabs--acc tabs idx active col cols nil))
+(defn draw-tabs (tabs idx active spin col cols)
+  (draw-tabs--acc tabs idx active spin col cols nil))
 
 (defn render-tabbar (model cols)
   (cons (bar 0 cols "" {:face {:bg :blue}})
-    (draw-tabs (get model :tabs) 0 (get model :active) 0 cols)))
+    (draw-tabs (get model :tabs) 0 (get model :active) (get model :spin 0) 0 cols)))
 
 (defn render-status (cols rows scroll)
   (let (hint " Ctrl-T tab · Ctrl-D close · Alt-1-9 switch · Tab complete · ↑/C-r history · PgUp/Dn scroll · help · exit"
         msg (if (> scroll 0) (str hint "   [scrolled +" scroll "]") hint))
     (bar (- rows 1) cols msg {:face {:reverse true}})))
 
+(defn elapsed-str (now started)
+  "`now - started` (ms) as a `12.3s` readout (tenths), never negative."
+  (let (el (max 0 (- now started)))
+    (str (quot el 1000) "." (mod (quot el 100) 10) "s")))
+
+(defn job-status-line (now spin job)
+  "One spinner line for a running job: `⠋ <command>   12.3s`."
+  (list [(str (spin-frame spin) " ") *f-run*]
+    [(get job :line) nil]
+    [(str "   " (elapsed-str now (get job :started 0))) *f-dim*]))
+
+(defn job-status-lines (model tab)
+  "The active tab's running jobs as spinner lines (newest first), shown just above
+the prompt — the live, Claude-CLI-style view of what's running in this tab."
+  (let (now (get model :now 0)
+        spin (get model :spin 0))
+    (map (fn (j) (job-status-line now spin j)) (get tab :jobs))))
+
 (defn view (model cols rows)
-  "Render the model to a frame: tab bar (row 0), scrollback + edit line, status bar.
-While reverse-searching, the edit line shows lineedit's `(reverse-i-search)` prompt."
+  "Render the model to a frame: tab bar (row 0), scrollback, running-job spinners,
+edit line, status bar. While reverse-searching, the edit line shows lineedit's
+`(reverse-i-search)` prompt."
   (let (tab (active-tab model)
         height (max 1 (- rows 2))
         search-p (editor/lineedit/lineedit--display-prompt (get tab :edit))
@@ -298,7 +436,8 @@ While reverse-searching, the edit line shows lineedit's `(reverse-i-search)` pro
         hoff (if (< curs visw) 0 (+ (- curs visw) 1))
         shown (substring input hoff (min ilen (+ hoff visw)))
         pline (list [pstr *f-prompt*] [shown nil])
-        vlines (into (get tab :lines) [pline])
+        jobls (into [] (job-status-lines model tab))
+        vlines (into (into (get tab :lines) jobls) [pline])
         total (count vlines)
         scroll (min (get tab :scroll 0) (max 0 (- total height)))
         start (max 0 (- total height scroll))
@@ -320,17 +459,36 @@ While reverse-searching, the edit line shows lineedit's `(reverse-i-search)` pro
 
 (defn fresh-model ()
   (let (dir (cwd))
-    {:tabs [(new-tab dir)] :active 0 :done false :tick-ms 60000}))
+    {:tabs [(new-tab dir)]
+     :active 0
+     :done false
+     :tick-ms *idle-tick*
+     :next-job 1
+     :spin 0
+     :now 0}))
+
+(defn with-jobs (display)
+  "Wrap `display` so its `:poll` first delivers any queued `[:cmd-done …]` worker reply
+(this process's mailbox) as loop input, else polls `display` as usual — the same seam
+`editor/ui/with-events` uses for SSE. So a finished background command reaches `update`
+as an event: on the GUI the loop is already parked in a mailbox `receive`, so it wakes
+the instant the worker replies (no polling); on the terminal the short busy-tick beat
+drains the mailbox between blocking keyboard reads."
+  (assoc display
+    :poll
+    (fn (ms)
+      (let (ev (receive ([:cmd-done jid r] [:cmd-done jid r]) (after 0 nil)))
+        (if (nil? ev) ((get display :poll) ms) ev)))))
 
 (defn start-term ()
   "Launch on the terminal frontend (needs a host TTY). Blocks until the last tab
 is closed — Ctrl-W on the final tab, or `exit`."
-  (ui-run (fresh-model) view update *term-display*))
+  (ui-run (fresh-model) view update (with-jobs *term-display*)))
 
 (defn start-gui ()
   "Launch in a native window (`--features gui` build) — no host terminal needed.
 Close the window's X, Ctrl-W the last tab, or `exit` to quit."
-  (ui-run (fresh-model) view update (gui-display)))
+  (ui-run (fresh-model) view update (with-jobs (gui-display))))
 
 (defn start ()
   "Launch brood-terminal in a native window (the default — no host TTY required).
