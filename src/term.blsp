@@ -20,7 +20,7 @@
 ;; newest-first history + reverse-search), in `:path` word mode so M-b/M-f/C-w/M-d
 ;; move and kill one path component at a time. Tab-level keys (Ctrl-T/Alt-1..9/
 ;; PgUp/Dn/Tab-complete/Ctrl-L) are intercepted in `handle-key`; everything else
-;; flows through `lineedit--handle`, and its `:done` drives submit / cancel / close.
+;; flows through `lineedit-handle`, and its `:done` drives submit / cancel / close.
 
 (defmodule term
   "The tabbed terminal UI for brood-terminal — a `ui-run` app whose tabs each run
@@ -77,7 +77,7 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 (defn fresh-edit (hist)
   "A fresh edit-line state seeded with newest-first history `hist`, in `:path` word
 mode (M-b/M-f/C-w/M-d move and kill by path component)."
-  (assoc (editor/lineedit/lineedit--init "" "" hist) :word-mode :path))
+  (assoc (editor/lineedit/lineedit-init "" "" hist) :word-mode :path))
 
 (defn edit-text (t)
   "The tab's current edit-line text."
@@ -248,7 +248,7 @@ original synchronous path: honour `:exit`/`:clear`/`:cwd`, append output, re-pro
                  :history
                  hist
                  :edit
-                 (fresh-edit (editor/lineedit/lineedit--remember (get (get tab :edit) :hist) input))
+                 (fresh-edit (editor/lineedit/lineedit-remember (get (get tab :edit) :hist) input))
                  :scroll
                  0))
       (assoc model :tabs (assoc (get model :tabs) i tab2)))))
@@ -270,7 +270,7 @@ immediately so the user keeps working while it runs."
                :history
                hist
                :edit
-               (fresh-edit (editor/lineedit/lineedit--remember (get (get tab :edit) :hist) input))
+               (fresh-edit (editor/lineedit/lineedit-remember (get (get tab :edit) :hist) input))
                :scroll
                0))
     (refresh-tick (assoc model
@@ -310,7 +310,7 @@ jobs so a slow one never freezes the UI."
 kill/yank (path-component word ops), ↑/↓ history, C-r reverse-search. `:done`
 drives the shell: `:submit` (Enter) runs the line, `:cancel` (C-c) echoes `^C`
 and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
-  (let (edit (editor/lineedit/lineedit--handle (get (active-tab model) :edit) input)
+  (let (edit (editor/lineedit/lineedit-handle (get (active-tab model) :edit) input)
         done (get edit :done))
     (cond
       (= done :submit) (submit model cols rows)
@@ -426,7 +426,7 @@ edit line, status bar. While reverse-searching, the edit line shows lineedit's
 `(reverse-i-search)` prompt."
   (let (tab (active-tab model)
         height (max 1 (- rows 2))
-        search-p (editor/lineedit/lineedit--display-prompt (get tab :edit))
+        search-p (editor/lineedit/lineedit-display-prompt (get tab :edit))
         pstr (if (= search-p "") (prompt-str tab) search-p)
         plen (string-length pstr)
         input (edit-text tab)
