@@ -267,7 +267,7 @@ unlike `partition`)."
 (defn grep-file (cwd pattern a multi?)
   (match (read-file-lines cwd a)
     ([:err m] (list (ln (str "grep: " m) *f-err*)))
-    ([:ok lns] (let (hits (filter (fn (l) (string-contains? l pattern)) lns))
+    ([:ok lns] (let (hits (filter (fn (l) (includes? l pattern)) lns))
                  (map (fn (l) (if multi? (list [(str a ":") *f-dim*] [l nil]) (ln l)))
                    hits)))))
 
@@ -417,15 +417,15 @@ unlike `partition`)."
 (defn shell-meta? (s)
   "True if `s` uses POSIX shell syntax (pipes, redirection, globs, `$`, …) that a
 built-in can't honour — so the whole line must go to `/bin/sh` instead."
-  (or (string-contains? s "|")
-    (string-contains? s ">")
-    (string-contains? s "<")
-    (string-contains? s ";")
-    (string-contains? s "&")
-    (string-contains? s "$")
-    (string-contains? s "`")
-    (string-contains? s "*")
-    (string-contains? s "?")))
+  (or (includes? s "|")
+    (includes? s ">")
+    (includes? s "<")
+    (includes? s ";")
+    (includes? s "&")
+    (includes? s "$")
+    (includes? s "`")
+    (includes? s "*")
+    (includes? s "?")))
 
 (defn shell-quote (s)
   "`s` wrapped as a single POSIX shell word (single-quoted, embedded quotes escaped)."

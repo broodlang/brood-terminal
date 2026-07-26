@@ -48,7 +48,7 @@
     (let (r (run-command "definitely-not-a-cmd" {:cwd "/tmp" :cols 80})
           lines (get r :lines)
           last (first (first (nth lines (dec (count lines))))))
-      (is (string-contains? last "[exit")))))
+      (is (includes? last "[exit")))))
 
 (describe "eshell dispatch"
   (test "builtin? knows ls but not git"
