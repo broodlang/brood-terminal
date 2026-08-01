@@ -56,7 +56,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
   (cond
     (= p "~") (home)
     (starts-with? p "~/") (str (home) (substring p 1 (string-length p)))
-    :else p))
+    else p))
 
 (defn split-path (p)
   "The non-empty `/`-separated components of `p`."
@@ -66,7 +66,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
   (cond
     (= c ".") stack
     (= c "..") (if (empty? stack) stack (subvec stack 0 (dec (count stack))))
-    :else (into stack [c])))
+    else (into stack [c])))
 
 (defn resolve-path (cwd p)
   "Absolute, normalised path for `p` interpreted relative to `cwd` — expands a
@@ -82,7 +82,7 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
     (cond
       (= cwd h) "~"
       (starts-with? cwd (str h "/")) (str "~" (substring cwd (string-length h) (string-length cwd)))
-      :else cwd)))
+      else cwd)))
 
 ;; ---- tokenizer (whitespace split with "double quotes" + $VAR expansion) -----
 
@@ -103,7 +103,7 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
         (= c "\"") (tok--scan tl cur toks (not inq))
         (and (not inq) (= c " ")) (tok--scan tl "" (tok--push cur toks) inq)
         (and (not inq) (= c "\t")) (tok--scan tl "" (tok--push cur toks) inq)
-        :else (tok--scan tl (str cur c) toks inq)))))
+        else (tok--scan tl (str cur c) toks inq)))))
 
 (defn tokenize (s)
   "Split a command line into argument tokens — whitespace-separated, honouring
@@ -168,7 +168,7 @@ unlike `partition`)."
                                          arg0
                                          "': No such file or directory"))
       (not (dir? target)) (out (list (ln arg0)))
-      :else (let (names (sort (visible (list-dir target) showall)))
+      else (let (names (sort (visible (list-dir target) showall)))
               (if (empty? names)
                 (out nil)
                 (out (ls-grid target names cols)))))))
@@ -190,7 +190,7 @@ unlike `partition`)."
     (cond
       (not (file-exists? target)) (err (str "ll: cannot access '" arg0 "'"))
       (not (dir? target)) (out (list (ll-line cwd arg0)))
-      :else (let (names (sort (visible (list-dir target) (flag? args "-a"))))
+      else (let (names (sort (visible (list-dir target) (flag? args "-a"))))
               (out (map (fn (n) (ll-line target n)) names))))))
 
 ;; ---- cat / head / tail / wc / grep -----------------------------------------
@@ -201,7 +201,7 @@ unlike `partition`)."
     (cond
       (not (file-exists? p)) [:err (str a ": No such file or directory")]
       (dir? p) [:err (str a ": Is a directory")]
-      :else [:ok (split-lines (slurp p))])))
+      else [:ok (split-lines (slurp p))])))
 
 (defn for-each-file (cwd args render-ok)
   ;; fold over file args, concatenating output lines; errors render in red.
@@ -226,7 +226,7 @@ unlike `partition`)."
                                                                                                                         1
                                                                                                                         (string-length (first args))))
                                                                                                     default) (rest args)]
-    :else [default args]))
+    else [default args]))
 
 (defn cmd-head (args cwd)
   (let ([n files] (parse-n args 10))
@@ -309,7 +309,7 @@ unlike `partition`)."
       (dir? p) (if recursive?
                  (try-fs (fn () (do (delete-dir p) nil)) "rm: ")
                  (ln (str "rm: " a ": is a directory (use -r)") *f-err*))
-      :else (try-fs (fn () (do (delete-file p) nil)) "rm: "))))
+      else (try-fs (fn () (do (delete-file p) nil)) "rm: "))))
 
 (defn cmd-rm (args cwd)
   (let (recursive? (or (flag? args "-r") (flag? args "-rf") (flag? args "-f"))
@@ -357,7 +357,7 @@ unlike `partition`)."
     (cond
       (not (file-exists? target)) (err (str "cd: " label ": No such file or directory"))
       (not (dir? target)) (err (str "cd: " label ": Not a directory"))
-      :else {:lines nil :cwd target})))
+      else {:lines nil :cwd target})))
 
 (defn exec (cmd args ctx)
   (let (cwd (get ctx :cwd)
@@ -384,7 +384,7 @@ unlike `partition`)."
       (= cmd "clear") {:lines nil :clear true}
       (= cmd "exit") {:lines nil :exit true}
       (= cmd "quit") {:lines nil :exit true}
-      :else {:lines (list (ln (str "brood-sh: command not found: " cmd) *f-err*)
+      else {:lines (list (ln (str "brood-sh: command not found: " cmd) *f-err*)
                       (ln "  type 'help' for the built-in commands" *f-dim*))})))
 
 ;; ---- the eshell seam: Brood eval + external POSIX delegation ----------------
@@ -473,7 +473,7 @@ state or are instant) while external commands become non-blocking background job
       (blank? s) [:inline {:lines nil}]
       (starts-with? s "(") [:inline (run-brood s)]
       (starts-with? s "*") [:external (substring s 1 (string-length s))]
-      :else (let (toks (tokenize s)
+      else (let (toks (tokenize s)
                   cmd (first toks))
               (if (and (builtin? cmd) (not (shell-meta? s)))
                 [:inline (exec cmd (rest toks) ctx)]

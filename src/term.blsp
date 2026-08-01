@@ -59,7 +59,7 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
   (cond
     (< i 0) -1
     (= (char-at s i) ch) i
-    :else (rindex--at s ch (dec i))))
+    else (rindex--at s ch (dec i))))
 
 (defn rindex (s ch)
   "Index of the last occurrence of 1-char `ch` in `s`, or -1."
@@ -133,7 +133,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
       (= (count ms) 1) (let (m (first ms)
                              suffix (if (dir? (resolve-path sdir m)) "/" " "))
                          (set-line t (str head dirp m suffix)))
-      :else (let (cp (editor/highlight/common-prefix ms)
+      else (let (cp (editor/highlight/common-prefix ms)
                   opts (list [(join "  " ms) *f-dim*]))
               (assoc (set-line t (str head dirp cp))
                 :lines
@@ -303,7 +303,7 @@ jobs so a slow one never freezes the UI."
     (cond
       (= action :scroll-up) (scroll-by model 3)
       (= action :scroll-down) (scroll-by model -3)
-      :else model)))
+      else model)))
 
 (defn edit-key (model input cols rows)
   "Fold one key into the active tab's edit line via lineedit — typing, motion,
@@ -318,7 +318,7 @@ and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
                          (update-active model cancel-line)
                          (cancel-jobs model))
       (= done :eof) (close-tab model)
-      :else (update-active model (fn (t) (assoc t :edit edit :scroll 0))))))
+      else (update-active model (fn (t) (assoc t :edit edit :scroll 0))))))
 
 (defn handle-key (model input cols rows)
   (let (page (max 1 (- rows 4)))
@@ -332,7 +332,7 @@ and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
       ;; raw-mode Enter aliases: a piped/scripted `\n` arrives as :ctrl-j (and `\r`
       ;; can arrive as :ctrl-m) — treat them as Enter so scripted input submits.
       (or (= input :ctrl-j) (= input :ctrl-m)) (edit-key model :enter cols rows)
-      :else (edit-key model input cols rows))))
+      else (edit-key model input cols rows))))
 
 (defn update (model input cols rows)
   "Fold one input event into the model (the `ui-run` update fn). `:tick` advances the
@@ -348,7 +348,7 @@ component like every shell — drives the lineedit edit line."
     (and (vector? input) (= (first input) :mouse)) (handle-mouse model input)
     (vector? input) model
     (contains? *alt-tab* input) (goto-tab model (get *alt-tab* input))
-    :else (handle-key model input cols rows)))
+    else (handle-key model input cols rows)))
 
 ;; ---- view (model → frame) ---------------------------------------------------
 
