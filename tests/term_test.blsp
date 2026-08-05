@@ -97,9 +97,9 @@
           t (active-tab m))
       (assert= (count (get t :jobs)) 1)
       (assert= (get (first (get t :jobs)) :line) "echo $HOME")
-      (assert= (edit-text t) "")  ; prompt is live again immediately
+      (assert= (edit-text t) "") ; prompt is live again immediately
       (assert= (get t :history) ["echo $HOME"])
-      (assert= (get m :tick-ms) 120)))  ; beat speeds up while running
+      (assert= (get m :tick-ms) 120))) ; beat speeds up while running
   (test "a built-in stays inline (runs synchronously, no job)"
     (let (m (update (type-str (fresh-model) "pwd") :enter 80 24))
       (is (empty? (get (active-tab m) :jobs)))))
@@ -111,7 +111,7 @@
           t (active-tab m))
       (is (empty? (get t :jobs)))
       (assert= (last-line-text m) "job output")
-      (assert= (get m :tick-ms) 60000)))  ; back to idle when nothing runs
+      (assert= (get m :tick-ms) 60000))) ; back to idle when nothing runs
   (test ":cmd-done for an unknown job id is ignored"
     (let (m (model-with-job 7 (self)))
       (assert= (count (get (active-tab (update m [:cmd-done 99 {:lines nil}] 80 24)) :jobs)) 1)))

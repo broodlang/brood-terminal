@@ -62,7 +62,8 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
   "The non-empty `/`-separated components of `p`."
   (filter (fn (s) (not (= s ""))) (string-split p "/")))
 
-(defn norm--step (stack c)
+(defn- norm-step
+  (stack c)
   (cond
     (= c ".") stack
     (= c "..") (if (empty? stack) stack (subvec stack 0 (dec (count stack))))
@@ -73,7 +74,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
   (let (p1 (expand-tilde p)
         joined (if (starts-with? p1 "/") p1 (str cwd "/" p1))
-        comps (fold norm--step [] (split-path joined)))
+        comps (fold norm-step [] (split-path joined)))
     (str "/" (join "/" comps))))
 
 (defn short-cwd (cwd)
@@ -91,36 +92,39 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
     (or (getenv (substring t 1 (string-length t))) "")
     t))
 
-(defn tok--push (cur toks)
+(defn- tok-push
+  (cur toks)
   (if (= cur "") toks (cons (expand-token cur) toks)))
 
-(defn tok--scan (cs cur toks inq)
+(defn- tok-scan
+  (cs cur toks inq)
   (if (empty? cs)
-    (reverse (tok--push cur toks))
+    (reverse (tok-push cur toks))
     (let (c (first cs)
           tl (rest cs))
       (cond
-        (= c "\"") (tok--scan tl cur toks (not inq))
-        (and (not inq) (= c " ")) (tok--scan tl "" (tok--push cur toks) inq)
-        (and (not inq) (= c "\t")) (tok--scan tl "" (tok--push cur toks) inq)
-        else (tok--scan tl (str cur c) toks inq)))))
+        (= c "\"") (tok-scan tl cur toks (not inq))
+        (and (not inq) (= c " ")) (tok-scan tl "" (tok-push cur toks) inq)
+        (and (not inq) (= c "\t")) (tok-scan tl "" (tok-push cur toks) inq)
+        else (tok-scan tl (str cur c) toks inq)))))
 
 (defn tokenize (s)
   "Split a command line into argument tokens — whitespace-separated, honouring
 `\"double quotes\"`, with leading-`$` tokens expanded from the environment."
-  (tok--scan (string->list s) "" nil false))
+  (tok-scan (string->list s) "" nil false))
 
 ;; ---- small helpers ----------------------------------------------------------
 
-(defn chunk--acc (n coll acc)
+(defn- chunk-acc
+  (n coll acc)
   (if (empty? coll)
     (reverse acc)
-    (chunk--acc n (drop n coll) (cons (take n coll) acc))))
+    (chunk-acc n (drop n coll) (cons (take n coll) acc))))
 
 (defn chunk (n coll)
   "`coll` split into consecutive lists of at most `n` items (keeps the remainder,
 unlike `partition`)."
-  (chunk--acc n coll nil))
+  (chunk-acc n coll nil))
 
 (defn max-len (strs)
   (fold (fn (m s) (max m (string-length s))) 0 strs))
@@ -164,14 +168,15 @@ unlike `partition`)."
         arg0 (if (empty? pos) "." (first pos))
         target (resolve-path cwd arg0))
     (cond
-      (not (file-exists? target)) (err (str "ls: cannot access '"
-                                         arg0
-                                         "': No such file or directory"))
+      (not (file-exists? target))
+        (err (str "ls: cannot access '"
+               arg0 "': No such file or directory"))
       (not (dir? target)) (out (list (ln arg0)))
-      else (let (names (sort (visible (list-dir target) showall)))
-              (if (empty? names)
-                (out nil)
-                (out (ls-grid target names cols)))))))
+      else
+        (let (names (sort (visible (list-dir target) showall)))
+          (if (empty? names)
+            (out nil)
+            (out (ls-grid target names cols)))))))
 
 (defn ll-line (dir name)
   (let (full (resolve-path dir name)
@@ -190,8 +195,9 @@ unlike `partition`)."
     (cond
       (not (file-exists? target)) (err (str "ll: cannot access '" arg0 "'"))
       (not (dir? target)) (out (list (ll-line cwd arg0)))
-      else (let (names (sort (visible (list-dir target) (flag? args "-a"))))
-              (out (map (fn (n) (ll-line target n)) names))))))
+      else
+        (let (names (sort (visible (list-dir target) (flag? args "-a"))))
+          (out (map (fn (n) (ll-line target n)) names))))))
 
 ;; ---- cat / head / tail / wc / grep -----------------------------------------
 
@@ -209,8 +215,7 @@ unlike `partition`)."
                (match (read-file-lines cwd a)
                  ([:err m] (append acc (list (ln (str "cat: " m) *f-err*))))
                  ([:ok lns] (append acc (render-ok a lns)))))
-         nil
-         args)))
+         nil args)))
 
 (defn cmd-cat (args cwd)
   (if (empty? args)
@@ -220,12 +225,16 @@ unlike `partition`)."
 (defn parse-n (args default)
   ;; -> [n positional-args] ; supports "-n N" and "-N".
   (cond
-    (and (>= (count args) 2) (= (first args) "-n")) [(or (string->number (nth args 1)) default) (drop 2
-                                                                                                  args)]
-    (and (>= (count args) 1) (starts-with? (first args) "-") (> (string-length (first args)) 1)) [(or (string->number (substring (first args)
-                                                                                                                        1
-                                                                                                                        (string-length (first args))))
-                                                                                                    default) (rest args)]
+    (and (>= (count args) 2) (= (first args) "-n"))
+      [(or (string->number (nth args 1)) default)
+        (drop 2
+          args)]
+    (and (>= (count args) 1) (starts-with? (first args) "-") (> (string-length (first args)) 1))
+      [(or (string->number (substring (first args)
+                             1
+                             (string-length (first args))))
+         default)
+        (rest args)]
     else [default args]))
 
 (defn cmd-head (args cwd)
@@ -261,8 +270,7 @@ unlike `partition`)."
                                            "  "
                                            a))
                                 (append acc (list (ln spec)))))))
-           nil
-           args))))
+           nil args))))
 
 (defn grep-file (cwd pattern a multi?)
   (match (read-file-lines cwd a)
@@ -306,9 +314,10 @@ unlike `partition`)."
   (let (p (resolve-path cwd a))
     (cond
       (not (file-exists? p)) (ln (str "rm: " a ": No such file or directory") *f-err*)
-      (dir? p) (if recursive?
-                 (try-fs (fn () (do (delete-dir p) nil)) "rm: ")
-                 (ln (str "rm: " a ": is a directory (use -r)") *f-err*))
+      (dir? p)
+        (if recursive?
+          (try-fs (fn () (do (delete-dir p) nil)) "rm: ")
+          (ln (str "rm: " a ": is a directory (use -r)") *f-err*))
       else (try-fs (fn () (do (delete-file p) nil)) "rm: "))))
 
 (defn cmd-rm (args cwd)
@@ -330,7 +339,8 @@ unlike `partition`)."
          (enumerate history))))
 
 (def *help*
-  [["brood-terminal — an eshell-style shell: Brood is the language, anything that" *f-head*] ["isn't a built-in runs as a real POSIX command via /bin/sh." *f-head*]
+  [["brood-terminal — an eshell-style shell: Brood is the language, anything that" *f-head*]
+    ["isn't a built-in runs as a real POSIX command via /bin/sh." *f-head*]
     ["" nil]
     ["  (brood form)      evaluate Brood, show the value   e.g. (+ 1 2) → 3" nil]
     ["  *cmd …            force the external POSIX command (skip the built-in)" nil]
@@ -384,8 +394,9 @@ unlike `partition`)."
       (= cmd "clear") {:lines nil :clear true}
       (= cmd "exit") {:lines nil :exit true}
       (= cmd "quit") {:lines nil :exit true}
-      else {:lines (list (ln (str "brood-sh: command not found: " cmd) *f-err*)
-                      (ln "  type 'help' for the built-in commands" *f-dim*))})))
+      else
+        {:lines (list (ln (str "brood-sh: command not found: " cmd) *f-err*)
+                  (ln "  type 'help' for the built-in commands" *f-dim*))})))
 
 ;; ---- the eshell seam: Brood eval + external POSIX delegation ----------------
 
@@ -473,11 +484,12 @@ state or are instant) while external commands become non-blocking background job
       (blank? s) [:inline {:lines nil}]
       (starts-with? s "(") [:inline (run-brood s)]
       (starts-with? s "*") [:external (substring s 1 (string-length s))]
-      else (let (toks (tokenize s)
-                  cmd (first toks))
-              (if (and (builtin? cmd) (not (shell-meta? s)))
-                [:inline (exec cmd (rest toks) ctx)]
-                [:external s])))))
+      else
+        (let (toks (tokenize s)
+              cmd (first toks))
+          (if (and (builtin? cmd) (not (shell-meta? s)))
+            [:inline (exec cmd (rest toks) ctx)]
+            [:external s])))))
 
 (defn run-command (input ctx)
   "Interpret `input` against `ctx` (`{:cwd :cols :history}`) eshell-style, returning
