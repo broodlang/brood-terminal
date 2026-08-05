@@ -29,9 +29,8 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
   (:use editor/display)
   (:use editor/ui))
 
-(require 'editor/lineedit)  ; the pure emacs-style line editor driving the edit line
-(require 'editor/highlight)  ; the stdlib longest-common-prefix helper for Tab completion
-
+(require 'editor/lineedit) ; the pure emacs-style line editor driving the edit line
+(require 'editor/highlight) ; the stdlib longest-common-prefix helper for Tab completion
 (def *max-lines* 4000)
 
 (def *alt-tab*
@@ -48,22 +47,22 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 
 (def *spinner* ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
 (def *f-run* {:fg :yellow :bold true})
-(def *idle-tick* 60000)  ; poll beat when nothing is running (just the refresh tick)
-(def *busy-tick* 120)  ; while a job runs: animate the spinner + drain the mailbox
-
+(def *idle-tick* 60000) ; poll beat when nothing is running (just the refresh tick)
+(def *busy-tick* 120) ; while a job runs: animate the spinner + drain the mailbox
 (defn spin-frame (spin) (nth *spinner* (mod spin (count *spinner*))))
 
 ;; ---- string helpers ---------------------------------------------------------
 
-(defn rindex--at (s ch i)
+(defn- rindex-at
+  (s ch i)
   (cond
     (< i 0) -1
     (= (char-at s i) ch) i
-    else (rindex--at s ch (dec i))))
+    else (rindex-at s ch (dec i))))
 
 (defn rindex (s ch)
   "Index of the last occurrence of 1-char `ch` in `s`, or -1."
-  (rindex--at s ch (dec (string-length s))))
+  (rindex-at s ch (dec (string-length s))))
 
 (defn basename (p)
   (let (i (rindex p "/"))
@@ -92,13 +91,16 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
   {:cwd cwd :lines (welcome) :edit (fresh-edit '()) :history [] :scroll 0 :jobs '()})
 
 (defn welcome ()
-  [(list ["  brood-terminal " *f-head*] ["— a Brood mini-shell (built-ins, no bash)" *f-dim*]) (list ["  type " *f-dim*]
-                                                                                                 ["help" {:fg :cyan
-                                                                                                          :bold true}]
-                                                                                                 [" for commands, or " *f-dim*]
-                                                                                                 ["ls" {:fg :cyan
-                                                                                                        :bold true}]
-                                                                                                 [" to look around." *f-dim*])
+  [(list ["  brood-terminal " *f-head*] ["— a Brood mini-shell (built-ins, no bash)" *f-dim*])
+    (list ["  type " *f-dim*]
+      ["help"
+        {:fg :cyan
+         :bold true}]
+      [" for commands, or " *f-dim*]
+      ["ls"
+        {:fg :cyan
+         :bold true}]
+      [" to look around." *f-dim*])
     (list ["" nil])])
 
 (defn active-tab (model) (nth (get model :tabs) (get model :active)))
@@ -130,24 +132,23 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
         ms (filter (fn (e) (starts-with? e base)) ents))
     (cond
       (or (nil? ms) (empty? ms)) t
-      (= (count ms) 1) (let (m (first ms)
-                             suffix (if (dir? (resolve-path sdir m)) "/" " "))
-                         (set-line t (str head dirp m suffix)))
-      else (let (cp (editor/highlight/common-prefix ms)
-                  opts (list [(join "  " ms) *f-dim*]))
-              (assoc (set-line t (str head dirp cp))
-                :lines
-                (cap-lines (into (get t :lines) [opts])))))))
+      (= (count ms) 1)
+        (let (m (first ms)
+              suffix (if (dir? (resolve-path sdir m)) "/" " "))
+          (set-line t (str head dirp m suffix)))
+      else
+        (let (cp (editor/highlight/common-prefix ms)
+              opts (list [(join "  " ms) *f-dim*]))
+          (assoc (set-line t (str head dirp cp))
+            :lines (cap-lines (into (get t :lines) [opts])))))))
 
 ;; ---- tab management ---------------------------------------------------------
 
 (defn add-tab (model)
   (let (tabs (get model :tabs))
     (assoc model
-      :tabs
-      (into tabs [(new-tab (get (active-tab model) :cwd))])
-      :active
-      (count tabs))))
+      :tabs (into tabs [(new-tab (get (active-tab model) :cwd))])
+      :active (count tabs))))
 
 (defn close-tab (model)
   (let (tabs (get model :tabs) i (get model :active))
@@ -165,12 +166,9 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 (defn cancel-line (t)
   (let (echo (append (prompt-spans t) (list [(str (edit-text t) "^C") nil])))
     (assoc t
-      :lines
-      (cap-lines (into (get t :lines) [echo]))
-      :edit
-      (fresh-edit (get (get t :edit) :hist))
-      :scroll
-      0)))
+      :lines (cap-lines (into (get t :lines) [echo]))
+      :edit (fresh-edit (get (get t :edit) :hist))
+      :scroll 0)))
 
 ;; ---- background-job bookkeeping ---------------------------------------------
 
@@ -241,16 +239,12 @@ original synchronous path: honour `:exit`/`:clear`/`:cwd`, append output, re-pro
                  (into (into (get tab :lines) [echo]) (into [] (or outlns nil))))
           hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
           tab2 (assoc tab
-                 :lines
-                 (cap-lines base)
-                 :cwd
-                 new-cwd
-                 :history
-                 hist
+                 :lines (cap-lines base)
+                 :cwd new-cwd
+                 :history hist
                  :edit
-                 (fresh-edit (editor/lineedit/lineedit-remember (get (get tab :edit) :hist) input))
-                 :scroll
-                 0))
+                   (fresh-edit (editor/lineedit/lineedit-remember (get (get tab :edit) :hist) input))
+                 :scroll 0))
       (assoc model :tabs (assoc (get model :tabs) i tab2)))))
 
 (defn submit-external (model i tab input line ctx echo)
@@ -263,23 +257,16 @@ immediately so the user keeps working while it runs."
         job {:id jid :pid pid :line line :started (now)}
         hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
         tab2 (assoc tab
-               :lines
-               (cap-lines (into (get tab :lines) [echo]))
-               :jobs
-               (cons job (get tab :jobs))
-               :history
-               hist
+               :lines (cap-lines (into (get tab :lines) [echo]))
+               :jobs (cons job (get tab :jobs))
+               :history hist
                :edit
-               (fresh-edit (editor/lineedit/lineedit-remember (get (get tab :edit) :hist) input))
-               :scroll
-               0))
+                 (fresh-edit (editor/lineedit/lineedit-remember (get (get tab :edit) :hist) input))
+               :scroll 0))
     (refresh-tick (assoc model
-                    :tabs
-                    (assoc (get model :tabs) i tab2)
-                    :next-job
-                    (inc jid)
-                    :now
-                    (now)))))
+                    :tabs (assoc (get model :tabs) i tab2)
+                    :next-job (inc jid)
+                    :now (now)))))
 
 (defn submit (model cols rows)
   "Run the typed line. Built-ins / `cd` / `(brood …)` run inline (instant, and `cd`
@@ -314,9 +301,10 @@ and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
         done (get edit :done))
     (cond
       (= done :submit) (submit model cols rows)
-      (= done :cancel) (if (empty? (get (active-tab model) :jobs))
-                         (update-active model cancel-line)
-                         (cancel-jobs model))
+      (= done :cancel)
+        (if (empty? (get (active-tab model) :jobs))
+          (update-active model cancel-line)
+          (cancel-jobs model))
       (= done :eof) (close-tab model)
       else (update-active model (fn (t) (assoc t :edit edit :scroll 0))))))
 
@@ -352,15 +340,16 @@ component like every shell — drives the lineedit edit line."
 
 ;; ---- view (model → frame) ---------------------------------------------------
 
-(defn draw-spans--acc (row col spans cols acc)
+(defn- draw-spans-acc
+  (row col spans cols acc)
   (if (or (empty? spans) (>= col cols))
     (reverse acc)
     (let ([s face] (first spans)
           avail (- cols col)
           s2 (if (> (string-length s) avail) (substring s 0 avail) s))
       (if (= s2 "")
-        (draw-spans--acc row col (rest spans) cols acc)
-        (draw-spans--acc row
+        (draw-spans-acc row col (rest spans) cols acc)
+        (draw-spans-acc row
           (+ col (string-length s2))
           (rest spans)
           cols
@@ -368,12 +357,13 @@ component like every shell — drives the lineedit edit line."
 
 (defn draw-spans (row col spans cols)
   "Render op list for `spans` laid left-to-right from `col`, clipped at `cols`."
-  (draw-spans--acc row col spans cols nil))
+  (draw-spans-acc row col spans cols nil))
 
 (defn render-window (window cols)
   (mapcat (fn ([i line]) (draw-spans (+ 1 i) 0 line cols)) (enumerate window)))
 
-(defn draw-tabs--acc (tabs idx active spin col cols acc)
+(defn- draw-tabs-acc
+  (tabs idx active spin col cols acc)
   (if (or (empty? tabs) (>= col cols))
     (reverse acc)
     (let (tab (first tabs)
@@ -382,7 +372,7 @@ component like every shell — drives the lineedit edit line."
           face (if (= idx active) {:bg :white :fg :black :bold true} {:bg :blue :fg :white})
           w (string-length label)
           shown (if (> (+ col w) cols) (substring label 0 (- cols col)) label))
-      (draw-tabs--acc (rest tabs)
+      (draw-tabs-acc (rest tabs)
         (+ idx 1)
         active
         spin
@@ -391,7 +381,7 @@ component like every shell — drives the lineedit edit line."
         (cons (text 0 col shown face) acc)))))
 
 (defn draw-tabs (tabs idx active spin col cols)
-  (draw-tabs--acc tabs idx active spin col cols nil))
+  (draw-tabs-acc tabs idx active spin col cols nil))
 
 (defn render-tabbar (model cols)
   (cons (bar 0 cols "" {:face {:bg :blue}})
@@ -476,9 +466,9 @@ the instant the worker replies (no polling); on the terminal the short busy-tick
 drains the mailbox between blocking keyboard reads."
   (assoc display
     :poll
-    (fn (ms)
-      (let (ev (receive ([:cmd-done jid r] [:cmd-done jid r]) (after 0 nil)))
-        (if (nil? ev) ((get display :poll) ms) ev)))))
+      (fn (ms)
+        (let (ev (receive ([:cmd-done jid r] [:cmd-done jid r]) (after 0 nil)))
+          (if (nil? ev) ((get display :poll) ms) ev)))))
 
 (defn start-term ()
   "Launch on the terminal frontend (needs a host TTY). Blocks until the last tab
