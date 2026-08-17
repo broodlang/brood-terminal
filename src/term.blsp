@@ -25,12 +25,10 @@
 (defmodule term
   "The tabbed terminal UI for brood-terminal — a `ui-run` app whose tabs each run
 the `commands` mini-shell. `(start)` launches it on the terminal frontend."
-  (:use commands)
+  (:use commands :exclude [ln])
   (:use editor/display)
   (:use editor/ui))
 
-(require 'editor/lineedit) ; the pure emacs-style line editor driving the edit line
-(require 'editor/highlight) ; the stdlib longest-common-prefix helper for Tab completion
 (def *max-lines* 4000)
 
 (def *alt-tab*
@@ -187,7 +185,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 (defn tab-index-with-job (model jid)
   "Index of the tab whose `:jobs` carries job id `jid`, or nil. Found by id (not by
 the active tab) because the job may finish after the user switched/added tabs."
-  (let (hit (filter (fn ([_ t]) (job-has? (get t :jobs) jid)) (enumerate (get model :tabs))))
+  (let (hit (filter (fn ([_ t]) (job-has? (get t :jobs) jid)) (enum/enumerate (get model :tabs))))
     (if (empty? hit) nil (first (first hit)))))
 
 (defn job-done (model ev)
@@ -360,7 +358,7 @@ component like every shell — drives the lineedit edit line."
   (draw-spans-acc row col spans cols nil))
 
 (defn render-window (window cols)
-  (mapcat (fn ([i line]) (draw-spans (+ 1 i) 0 line cols)) (enumerate window)))
+  (mapcat (fn ([i line]) (draw-spans (+ 1 i) 0 line cols)) (enum/enumerate window)))
 
 (defn- draw-tabs-acc
   (tabs idx active spin col cols acc)
