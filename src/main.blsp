@@ -1,7 +1,7 @@
 ;; src/main.blsp — the project entry point (nest run -> main/main).
 (defmodule main
   "Entry point for brood-terminal: launch the tabbed terminal UI."
-  (:use term))
+  (:use term :exclude [update]))
 
 (defn main ()
   "Start the tabbed terminal. Blocks until the last tab is closed."
