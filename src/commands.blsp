@@ -336,7 +336,7 @@ unlike `partition`)."
 
 (defn cmd-history (history)
   (out (map (fn ([i h]) (list [(string/pad-left (number->string (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
-         (enum/enumerate history))))
+         (seq/enumerate history))))
 
 (def *help*
   [["brood-terminal — an eshell-style shell: Brood is the language, anything that" *f-head*]
