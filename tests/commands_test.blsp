@@ -69,4 +69,4 @@
       (assert= r {:lines (list (ln "forced"))})))
   (test "a pipe through a built-in name still runs via sh"
     (let (r (run-command "echo a b c | wc -w" {:cwd "/tmp" :cols 80}))
-      (assert= (trim (first (first (first (get r :lines))))) "3"))))
+      (assert= (string/trim (first (first (first (get r :lines))))) "3"))))

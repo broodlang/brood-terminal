@@ -55,18 +55,18 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
   (s ch i)
   (cond
     (< i 0) -1
-    (= (char-at s i) ch) i
+    (= (string/char-at s i) ch) i
     else (rindex-at s ch (dec i))))
 
 (defn rindex (s ch)
   "Index of the last occurrence of 1-char `ch` in `s`, or -1."
-  (rindex-at s ch (dec (string-length s))))
+  (rindex-at s ch (dec (string/length s))))
 
 (defn basename (p)
   (let (i (rindex p "/"))
     (if (< i 0)
       p
-      (let (b (substring p (+ i 1) (string-length p)))
+      (let (b (string/substring p (+ i 1) (string/length p)))
         (if (= b "") "/" b)))))
 
 ;; ---- tab / model accessors --------------------------------------------------
@@ -83,7 +83,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 (defn set-line (t s)
   "The tab with its edit line replaced by `s`, point at the end."
   (let (e (get t :edit))
-    (assoc t :edit (assoc e :text s :point (string-length s) :hist-idx -1))))
+    (assoc t :edit (assoc e :text s :point (string/length s) :hist-idx -1))))
 
 (defn new-tab (cwd)
   {:cwd cwd :lines (welcome) :edit (fresh-edit '()) :history [] :scroll 0 :jobs '()})
@@ -120,23 +120,23 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 (defn complete (t)
   (let (input (edit-text t)
         sp (rindex input " ")
-        head (if (< sp 0) "" (substring input 0 (+ sp 1)))
-        token (if (< sp 0) input (substring input (+ sp 1) (string-length input)))
+        head (if (< sp 0) "" (string/substring input 0 (+ sp 1)))
+        token (if (< sp 0) input (string/substring input (+ sp 1) (string/length input)))
         slash (rindex token "/")
-        dirp (if (< slash 0) "" (substring token 0 (+ slash 1)))
-        base (if (< slash 0) token (substring token (+ slash 1) (string-length token)))
+        dirp (if (< slash 0) "" (string/substring token 0 (+ slash 1)))
+        base (if (< slash 0) token (string/substring token (+ slash 1) (string/length token)))
         sdir (resolve-path (get t :cwd) (if (= dirp "") "." dirp))
-        ents (if (dir? sdir) (sort (list-dir sdir)) nil)
-        ms (filter (fn (e) (starts-with? e base)) ents))
+        ents (if (file/dir? sdir) (sort (file/ls sdir)) nil)
+        ms (filter (fn (e) (string/starts-with? e base)) ents))
     (cond
       (or (nil? ms) (empty? ms)) t
       (= (count ms) 1)
         (let (m (first ms)
-              suffix (if (dir? (resolve-path sdir m)) "/" " "))
+              suffix (if (file/dir? (resolve-path sdir m)) "/" " "))
           (set-line t (str head dirp m suffix)))
       else
         (let (cp (editor/highlight/common-prefix ms)
-              opts (list [(join "  " ms) *f-dim*]))
+              opts (list [(string/join "  " ms) *f-dim*]))
           (assoc (set-line t (str head dirp cp))
             :lines (cap-lines (into (get t :lines) [opts])))))))
 
@@ -235,7 +235,7 @@ original synchronous path: honour `:exit`/`:clear`/`:cwd`, append output, re-pro
           base (if (get res :clear)
                  []
                  (into (into (get tab :lines) [echo]) (into [] (or outlns nil))))
-          hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
+          hist (if (string/blank? input) (get tab :history) (into (get tab :history) [input]))
           tab2 (assoc tab
                  :lines (cap-lines base)
                  :cwd new-cwd
@@ -253,7 +253,7 @@ immediately so the user keeps working while it runs."
         me (self)
         pid (spawn (send me [:cmd-done jid (run-external line ctx)]))
         job {:id jid :pid pid :line line :started (now)}
-        hist (if (blank? input) (get tab :history) (into (get tab :history) [input]))
+        hist (if (string/blank? input) (get tab :history) (into (get tab :history) [input]))
         tab2 (assoc tab
                :lines (cap-lines (into (get tab :lines) [echo]))
                :jobs (cons job (get tab :jobs))
@@ -344,11 +344,11 @@ component like every shell — drives the lineedit edit line."
     (reverse acc)
     (let ([s face] (first spans)
           avail (- cols col)
-          s2 (if (> (string-length s) avail) (substring s 0 avail) s))
+          s2 (if (> (string/length s) avail) (string/substring s 0 avail) s))
       (if (= s2 "")
         (draw-spans-acc row col (rest spans) cols acc)
         (draw-spans-acc row
-          (+ col (string-length s2))
+          (+ col (string/length s2))
           (rest spans)
           cols
           (cons (text row col s2 face) acc))))))
@@ -368,8 +368,8 @@ component like every shell — drives the lineedit edit line."
           busy (if (empty? (get tab :jobs)) "" (str " " (spin-frame spin)))
           label (str " " (+ idx 1) ":" (tab-title tab) busy " ")
           face (if (= idx active) {:bg :white :fg :black :bold true} {:bg :blue :fg :white})
-          w (string-length label)
-          shown (if (> (+ col w) cols) (substring label 0 (- cols col)) label))
+          w (string/length label)
+          shown (if (> (+ col w) cols) (string/substring label 0 (- cols col)) label))
       (draw-tabs-acc (rest tabs)
         (+ idx 1)
         active
@@ -416,13 +416,13 @@ edit line, status bar. While reverse-searching, the edit line shows lineedit's
         height (max 1 (- rows 2))
         search-p (editor/lineedit/lineedit-display-prompt (get tab :edit))
         pstr (if (= search-p "") (prompt-str tab) search-p)
-        plen (string-length pstr)
+        plen (string/length pstr)
         input (edit-text tab)
         curs (get (get tab :edit) :point)
-        ilen (string-length input)
+        ilen (string/length input)
         visw (max 1 (- cols plen))
         hoff (if (< curs visw) 0 (+ (- curs visw) 1))
-        shown (substring input hoff (min ilen (+ hoff visw)))
+        shown (string/substring input hoff (min ilen (+ hoff visw)))
         pline (list [pstr *f-prompt*] [shown nil])
         jobls (into [] (job-status-lines model tab))
         vlines (into (into (get tab :lines) jobls) [pline])
@@ -446,7 +446,7 @@ edit line, status bar. While reverse-searching, the edit line shows lineedit's
 ;; ---- entry ------------------------------------------------------------------
 
 (defn fresh-model ()
-  (let (dir (cwd))
+  (let (dir (file/cwd))
     {:tabs [(new-tab dir)]
      :active 0
      :done false
