@@ -112,7 +112,7 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
 (defn tokenize (s)
   "Split a command line into argument tokens — whitespace-separated, honouring
 `\"double quotes\"`, with leading-`$` tokens expanded from the environment."
-  (tok-scan (string/to-list s) "" nil false))
+  (tok-scan (string/->list s) "" nil false))
 
 ;; ---- small helpers ----------------------------------------------------------
 
@@ -182,7 +182,7 @@ unlike `partition`)."
 (defn ll-line (dir name)
   (let (full (resolve-path dir name)
         d (file/dir? full)
-        sz (if d "-" (number->string (or (file/size full) 0)))
+        sz (if d "-" (str (or (file/size full) 0)))
         face (if d *f-dir* nil))
     (list [(if d "d " "- ") *f-dim*]
       [(string/pad-left sz 10) *f-dim*]
@@ -266,12 +266,12 @@ unlike `partition`)."
                  (match (read-file-lines cwd a)
                    ([:err m] (append acc (list (ln (str "wc: " m) *f-err*))))
                    ([:ok lns] (let (text (string/join "\n" lns)
-                                    spec (str (string/pad-left (number->string (count lns)) 8)
-                                           (string/pad-left (number->string (fold +
+                                    spec (str (string/pad-left (str (count lns)) 8)
+                                           (string/pad-left (str (fold +
                                                                               0
                                                                               (map word-count lns)))
                                              8)
-                                           (string/pad-left (number->string (string/length text)) 8)
+                                           (string/pad-left (str (string/length text)) 8)
                                            "  "
                                            a))
                                 (append acc (list (ln spec)))))))
@@ -341,7 +341,7 @@ unlike `partition`)."
 
 (defn cmd-history (history)
   (out (map (fn ([i h])
-              (list [(string/pad-left (number->string (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
+              (list [(string/pad-left (str (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
          (seq/enumerate history))))
 
 (def *help*
