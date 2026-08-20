@@ -3,7 +3,7 @@
 ;; is driven through `update` with key inputs and asserted via `edit-text`.
 (defmodule term-test (:use term) (:use test))
 
-(defn type-str (m s) (fold (fn (acc ch) (update acc ch 80 24)) m (string/to-list s)))
+(defn type-str (m s) (fold (fn (acc ch) (update acc ch 80 24)) m (string/->list s)))
 (defn feed (m keys) (fold (fn (acc k) (update acc k 80 24)) m keys))
 (defn fresh () {:tabs [(new-tab "/a/b")] :active 0 :done false})
 (defn line (m) (edit-text (active-tab m)))
