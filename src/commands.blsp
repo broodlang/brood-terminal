@@ -82,7 +82,8 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
   (let (h (home))
     (cond
       (= cwd h) "~"
-      (string/starts-with? cwd (str h "/")) (str "~" (string/substring cwd (string/length h) (string/length cwd)))
+      (string/starts-with? cwd (str h "/"))
+        (str "~" (string/substring cwd (string/length h) (string/length cwd)))
       else cwd)))
 
 ;; ---- tokenizer (whitespace split with "double quotes" + $VAR expansion) -----
@@ -229,7 +230,9 @@ unlike `partition`)."
       [(or (string->number (nth args 1)) default)
         (drop 2
           args)]
-    (and (>= (count args) 1) (string/starts-with? (first args) "-") (> (string/length (first args)) 1))
+    (and (>= (count args) 1)
+      (string/starts-with? (first args) "-")
+      (> (string/length (first args)) 1))
       [(or (string->number (string/substring (first args)
                              1
                              (string/length (first args))))
@@ -264,7 +267,9 @@ unlike `partition`)."
                    ([:err m] (append acc (list (ln (str "wc: " m) *f-err*))))
                    ([:ok lns] (let (text (string/join "\n" lns)
                                     spec (str (string/pad-left (number->string (count lns)) 8)
-                                           (string/pad-left (number->string (fold + 0 (map word-count lns)))
+                                           (string/pad-left (number->string (fold +
+                                                                              0
+                                                                              (map word-count lns)))
                                              8)
                                            (string/pad-left (number->string (string/length text)) 8)
                                            "  "
@@ -335,7 +340,8 @@ unlike `partition`)."
 (defn cmd-date () (out (list (ln (str (now) " (ms since epoch)")))))
 
 (defn cmd-history (history)
-  (out (map (fn ([i h]) (list [(string/pad-left (number->string (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
+  (out (map (fn ([i h])
+              (list [(string/pad-left (number->string (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
          (seq/enumerate history))))
 
 (def *help*
