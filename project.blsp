@@ -1,7 +1,8 @@
 ;; brood-terminal — a Brood project.
 (project
   :name "brood-terminal"
-  :version "0.1.0")
+  :version "0.1.0"
+  :brood ">= 0.13.0")
 
 ;; To depend on other Brood packages, add a :dependencies vector to the form
 ;; above (ADR-037). Dep names are bare symbols (no quoting):
