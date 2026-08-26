@@ -4,3 +4,6 @@ _deps/
 # Editor / OS cruft
 *.swp
 .DS_Store
+
+# Startup-image cache — a build artifact, rebuilt on demand
+.brood/
