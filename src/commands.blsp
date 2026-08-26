@@ -464,7 +464,7 @@ finishes, then the captured output is returned as scrollback lines (no streaming
   (let (cwd (get ctx :cwd)
         tmp (str "/tmp/brood-term-" (os/now-ns) ".out")
         wrapped (str "cd " (shell-quote cwd) " && { " line " ; } > " tmp " 2>&1")
-        code (try (run-process "/bin/sh" ["-c" wrapped]) (catch e -1))
+        code (try (os/run-process "/bin/sh" ["-c" wrapped]) (catch e -1))
         output (if (file/exists? tmp) (file/slurp tmp) ""))
     (when (file/exists? tmp) (file/rm tmp))
     (external-result output code)))
