@@ -109,7 +109,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 
 (defn cap-lines (v)
   (let (n (count v))
-    (if (> n *max-lines*) (subvec v (- n *max-lines*) n) v)))
+    (if (> n *max-lines*) (seq/subvec v (- n *max-lines*) n) v)))
 
 (defn prompt-str (tab) (str (short-cwd (get tab :cwd)) " $ "))
 (defn prompt-spans (tab) (list [(prompt-str tab) *f-prompt*]))
@@ -152,7 +152,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
   (let (tabs (get model :tabs) i (get model :active))
     (if (<= (count tabs) 1)
       (assoc model :done true)
-      (let (tabs2 (remove-nth tabs i))
+      (let (tabs2 (seq/remove-nth tabs i))
         (assoc model :tabs tabs2 :active (min i (dec (count tabs2))))))))
 
 (defn goto-tab (model n)
@@ -207,7 +207,7 @@ tab and append the captured output. A non-existent jid (cancelled tab) is ignore
 (defn on-tick (model)
   "The refresh beat: advance the spinner frame and stamp `:now` so the elapsed-time
 readout next to a running job ticks up. `view` reads `:now`/`:spin` (stays pure)."
-  (assoc model :spin (inc (get model :spin 0)) :now (now)))
+  (assoc model :spin (inc (get model :spin 0)) :now (os/now)))
 
 (defn cancel-jobs (model)
   "Ctrl-C with jobs running in the active tab: kill the worker processes and note the
@@ -252,7 +252,7 @@ immediately so the user keeps working while it runs."
   (let (jid (get model :next-job)
         me (self)
         pid (spawn (send me [:cmd-done jid (run-external line ctx)]))
-        job {:id jid :pid pid :line line :started (now)}
+        job {:id jid :pid pid :line line :started (os/now)}
         hist (if (string/blank? input) (get tab :history) (into (get tab :history) [input]))
         tab2 (assoc tab
                :lines (cap-lines (into (get tab :lines) [echo]))
@@ -264,7 +264,7 @@ immediately so the user keeps working while it runs."
     (refresh-tick (assoc model
                     :tabs (assoc (get model :tabs) i tab2)
                     :next-job (inc jid)
-                    :now (now)))))
+                    :now (os/now)))))
 
 (defn submit (model cols rows)
   "Run the typed line. Built-ins / `cd` / `(brood …)` run inline (instant, and `cd`
@@ -390,23 +390,23 @@ component like every shell — drives the lineedit edit line."
         msg (if (> scroll 0) (str hint "   [scrolled +" scroll "]") hint))
     (bar (- rows 1) cols msg {:face {:reverse true}})))
 
-(defn elapsed-str (now started)
+(defn elapsed-str (os/now started)
   "`now - started` (ms) as a `12.3s` readout (tenths), never negative."
-  (let (el (max 0 (- now started)))
+  (let (el (max 0 (- os/now started)))
     (str (quot el 1000) "." (mod (quot el 100) 10) "s")))
 
-(defn job-status-line (now spin job)
+(defn job-status-line (os/now spin job)
   "One spinner line for a running job: `⠋ <command>   12.3s`."
   (list [(str (spin-frame spin) " ") *f-run*]
     [(get job :line) nil]
-    [(str "   " (elapsed-str now (get job :started 0))) *f-dim*]))
+    [(str "   " (elapsed-str os/now (get job :started 0))) *f-dim*]))
 
 (defn job-status-lines (model tab)
   "The active tab's running jobs as spinner lines (newest first), shown just above
 the prompt — the live, Claude-CLI-style view of what's running in this tab."
-  (let (now (get model :now 0)
+  (let (os/now (get model :now 0)
         spin (get model :spin 0))
-    (map (fn (j) (job-status-line now spin j)) (get tab :jobs))))
+    (map (fn (j) (job-status-line os/now spin j)) (get tab :jobs))))
 
 (defn view (model cols rows)
   "Render the model to a frame: tab bar (row 0), scrollback, running-job spinners,

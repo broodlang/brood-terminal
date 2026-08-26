@@ -50,7 +50,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 
 (defn home ()
   "The user's home directory (`$HOME`, or `/` if unset)."
-  (or (getenv "HOME") "/"))
+  (or (os/getenv "HOME") "/"))
 
 (defn expand-tilde (p)
   (cond
@@ -66,7 +66,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
   (stack c)
   (cond
     (= c ".") stack
-    (= c "..") (if (empty? stack) stack (subvec stack 0 (dec (count stack))))
+    (= c "..") (if (empty? stack) stack (seq/subvec stack 0 (dec (count stack))))
     else (into stack [c])))
 
 (defn resolve-path (cwd p)
@@ -90,7 +90,7 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
 
 (defn expand-token (t)
   (if (and (string/starts-with? t "$") (> (string/length t) 1))
-    (or (getenv (string/substring t 1 (string/length t))) "")
+    (or (os/getenv (string/substring t 1 (string/length t))) "")
     t))
 
 (defn- tok-push
@@ -268,8 +268,8 @@ unlike `partition`)."
                    ([:ok lns] (let (text (string/join "\n" lns)
                                     spec (str (string/pad-left (str (count lns)) 8)
                                            (string/pad-left (str (fold +
-                                                                              0
-                                                                              (map word-count lns)))
+                                                                   0
+                                                                   (map word-count lns)))
                                              8)
                                            (string/pad-left (str (string/length text)) 8)
                                            "  "
@@ -336,8 +336,8 @@ unlike `partition`)."
 
 (defn cmd-echo (args) (out (list (ln (string/join " " args)))))
 (defn cmd-pwd (cwd) (out (list (ln cwd))))
-(defn cmd-whoami () (out (list (ln (or (getenv "USER") "unknown")))))
-(defn cmd-date () (out (list (ln (str (now) " (ms since epoch)")))))
+(defn cmd-whoami () (out (list (ln (or (os/getenv "USER") "unknown")))))
+(defn cmd-date () (out (list (ln (str (os/now) " (ms since epoch)")))))
 
 (defn cmd-history (history)
   (out (map (fn ([i h])
@@ -462,7 +462,7 @@ is handed to `/bin/sh -c` (run in `ctx`'s cwd, stdout+stderr redirected to a tem
 file), so pipes, globs, redirection and `$VARS` all work. Blocks until the command
 finishes, then the captured output is returned as scrollback lines (no streaming)."
   (let (cwd (get ctx :cwd)
-        tmp (str "/tmp/brood-term-" (now-ns) ".out")
+        tmp (str "/tmp/brood-term-" (os/now-ns) ".out")
         wrapped (str "cd " (shell-quote cwd) " && { " line " ; } > " tmp " 2>&1")
         code (try (run-process "/bin/sh" ["-c" wrapped]) (catch e -1))
         output (if (file/exists? tmp) (file/slurp tmp) ""))
