@@ -50,7 +50,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 
 (defn home ()
   "The user's home directory (`$HOME`, or `/` if unset)."
-  (or (os/getenv "HOME") "/"))
+  (or (os/env "HOME") "/"))
 
 (defn expand-tilde (p)
   (cond
@@ -90,7 +90,7 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
 
 (defn expand-token (t)
   (if (and (string/starts-with? t "$") (> (string/length t) 1))
-    (or (os/getenv (string/substring t 1 (string/length t))) "")
+    (or (os/env (string/substring t 1 (string/length t))) "")
     t))
 
 (defn- tok-push
@@ -128,7 +128,7 @@ unlike `partition`)."
   (chunk-acc n coll nil))
 
 (defn max-len (strs)
-  (fold (fn (m s) (max m (string/length s))) 0 strs))
+  (fold (fn (m s) (math/max m (string/length s))) 0 strs))
 
 (defn split-lines (s)
   "`s` split on newlines (a trailing newline does not yield a final empty line)."
@@ -159,7 +159,7 @@ unlike `partition`)."
 (defn ls-grid (dir names cols)
   (let (cells (map (fn (n) (ls-cell dir n)) names)
         colw (+ 2 (max-len (map (fn (c) (first c)) cells)))
-        ncols (max 1 (quot (max cols 1) colw))
+        ncols (math/max 1 (math/quot (math/max cols 1) colw))
         rows (chunk ncols cells))
     (map (fn (r) (ls-row-spans r colw)) rows)))
 
@@ -227,15 +227,15 @@ unlike `partition`)."
   ;; -> [n positional-args] ; supports "-n N" and "-N".
   (cond
     (and (>= (count args) 2) (= (first args) "-n"))
-      [(or (string->number (nth args 1)) default)
+      [(or (string/->number (nth args 1)) default)
         (drop 2
           args)]
     (and (>= (count args) 1)
       (string/starts-with? (first args) "-")
       (> (string/length (first args)) 1))
-      [(or (string->number (string/substring (first args)
-                             1
-                             (string/length (first args))))
+      [(or (string/->number (string/substring (first args)
+                              1
+                              (string/length (first args))))
          default)
         (rest args)]
     else [default args]))
@@ -254,7 +254,7 @@ unlike `partition`)."
         files
         (fn (a lns)
           (let (c (count lns))
-            (map (fn (l) (ln l)) (drop (max 0 (- c n)) lns))))))))
+            (map (fn (l) (ln l)) (drop (math/max 0 (- c n)) lns))))))))
 
 (defn word-count (s)
   (count (filter (fn (w) (not (= w ""))) (string/split (string/replace s "\t" " ") " "))))
@@ -336,7 +336,7 @@ unlike `partition`)."
 
 (defn cmd-echo (args) (out (list (ln (string/join " " args)))))
 (defn cmd-pwd (cwd) (out (list (ln cwd))))
-(defn cmd-whoami () (out (list (ln (or (os/getenv "USER") "unknown")))))
+(defn cmd-whoami () (out (list (ln (or (os/env "USER") "unknown")))))
 (defn cmd-date () (out (list (ln (str (os/now) " (ms since epoch)")))))
 
 (defn cmd-history (history)
