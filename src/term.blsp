@@ -47,7 +47,7 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 (def *f-run* {:fg :yellow :bold true})
 (def *idle-tick* 60000) ; poll beat when nothing is running (just the refresh tick)
 (def *busy-tick* 120) ; while a job runs: animate the spinner + drain the mailbox
-(defn spin-frame (spin) (nth *spinner* (mod spin (count *spinner*))))
+(defn spin-frame (spin) (nth *spinner* (math/mod spin (count *spinner*))))
 
 ;; ---- string helpers ---------------------------------------------------------
 
@@ -152,14 +152,14 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
   (let (tabs (get model :tabs) i (get model :active))
     (if (<= (count tabs) 1)
       (assoc model :done true)
-      (let (tabs2 (seq/remove-nth tabs i))
-        (assoc model :tabs tabs2 :active (min i (dec (count tabs2))))))))
+      (let (tabs2 (seq/remove-nth i tabs))
+        (assoc model :tabs tabs2 :active (math/min i (dec (count tabs2))))))))
 
 (defn goto-tab (model n)
   (if (and (>= n 0) (< n (count (get model :tabs)))) (assoc model :active n) model))
 
 (defn scroll-by (model delta)
-  (update-active model (fn (t) (assoc t :scroll (max 0 (+ (get t :scroll 0) delta))))))
+  (update-active model (fn (t) (assoc t :scroll (math/max 0 (+ (get t :scroll 0) delta))))))
 
 (defn cancel-line (t)
   (let (echo (append (prompt-spans t) (list [(str (edit-text t) "^C") nil])))
@@ -307,7 +307,7 @@ and re-prompts, `:eof` (C-d on an empty line) closes the tab, shell-style."
       else (update-active model (fn (t) (assoc t :edit edit :scroll 0))))))
 
 (defn handle-key (model input cols rows)
-  (let (page (max 1 (- rows 4)))
+  (let (page (math/max 1 (- rows 4)))
     (cond
       (= input :tab) (update-active model complete)
       (= input :ctrl-l) (update-active model (fn (t) (assoc t :lines [] :scroll 0)))
@@ -392,8 +392,8 @@ component like every shell — drives the lineedit edit line."
 
 (defn elapsed-str (os/now started)
   "`now - started` (ms) as a `12.3s` readout (tenths), never negative."
-  (let (el (max 0 (- os/now started)))
-    (str (quot el 1000) "." (mod (quot el 100) 10) "s")))
+  (let (el (math/max 0 (- os/now started)))
+    (str (math/quot el 1000) "." (math/mod (math/quot el 100) 10) "s")))
 
 (defn job-status-line (os/now spin job)
   "One spinner line for a running job: `⠋ <command>   12.3s`."
@@ -413,27 +413,27 @@ the prompt — the live, Claude-CLI-style view of what's running in this tab."
 edit line, status bar. While reverse-searching, the edit line shows lineedit's
 `(reverse-i-search)` prompt."
   (let (tab (active-tab model)
-        height (max 1 (- rows 2))
+        height (math/max 1 (- rows 2))
         search-p (editor/lineedit/lineedit-display-prompt (get tab :edit))
         pstr (if (= search-p "") (prompt-str tab) search-p)
         plen (string/length pstr)
         input (edit-text tab)
         curs (get (get tab :edit) :point)
         ilen (string/length input)
-        visw (max 1 (- cols plen))
+        visw (math/max 1 (- cols plen))
         hoff (if (< curs visw) 0 (+ (- curs visw) 1))
-        shown (string/substring input hoff (min ilen (+ hoff visw)))
+        shown (string/substring input hoff (math/min ilen (+ hoff visw)))
         pline (list [pstr *f-prompt*] [shown nil])
         jobls (into [] (job-status-lines model tab))
         vlines (into (into (get tab :lines) jobls) [pline])
         total (count vlines)
-        scroll (min (get tab :scroll 0) (max 0 (- total height)))
-        start (max 0 (- total height scroll))
+        scroll (math/min (get tab :scroll 0) (math/max 0 (- total height)))
+        start (math/max 0 (- total height scroll))
         window (take height (drop start vlines))
         body (render-window window cols)
         curop (if (= scroll 0)
                 (let (row (+ 1 (- (dec total) start))
-                      col (min (dec cols) (+ plen (- curs hoff))))
+                      col (math/min (dec cols) (+ plen (- curs hoff))))
                   (if (and (>= row 1) (<= row (- rows 2))) (cursor row col) nil))
                 nil)
         ops (append (list (clear))

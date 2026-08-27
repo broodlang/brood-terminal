@@ -7,7 +7,7 @@
   (test "keeps quoted spans together"
     (assert= (tokenize "echo \"a b\" c") (list "echo" "a b" "c")))
   (test "expands a $VAR token"
-    (assert= (tokenize "echo $HOME") (list "echo" (os/getenv "HOME"))))
+    (assert= (tokenize "echo $HOME") (list "echo" (os/env "HOME"))))
   (test "empty line -> no tokens"
     (assert= (tokenize "   ") nil)))
 
@@ -19,13 +19,13 @@
   (test "keeps an absolute path"
     (assert= (resolve-path "/a/b" "/x/y") "/x/y"))
   (test "expands a leading ~"
-    (assert= (resolve-path "/anywhere" "~") (or (os/getenv "HOME") "/"))))
+    (assert= (resolve-path "/anywhere" "~") (or (os/env "HOME") "/"))))
 
 (describe "short-cwd"
   (test "home is ~"
-    (assert= (short-cwd (or (os/getenv "HOME") "/")) "~"))
+    (assert= (short-cwd (or (os/env "HOME") "/")) "~"))
   (test "under home is ~/..."
-    (assert= (short-cwd (str (or (os/getenv "HOME") "/") "/x")) "~/x")))
+    (assert= (short-cwd (str (or (os/env "HOME") "/") "/x")) "~/x")))
 
 (describe "run-command"
   (test "pwd echoes the cwd"
