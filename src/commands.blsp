@@ -472,7 +472,7 @@ finishes, then the captured output is returned as scrollback lines (no streaming
 (defn run-brood (input)
   "Evaluate `input` as a Brood expression and show its value (the eshell Lisp seam)."
   (try
-    (out (list (ln (pr-str (eval-string input)) {:fg :magenta})))
+    (out (list (ln (pr-str (reflect/eval-string input)) {:fg :magenta})))
     (catch e (err (str "error: " (error-message e))))))
 
 (defn plan-command (input ctx)
