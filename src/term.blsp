@@ -51,8 +51,7 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 
 ;; ---- string helpers ---------------------------------------------------------
 
-(defn- rindex-at
-  (s ch i)
+(defn- rindex-at (s ch i)
   (cond
     (< i 0) -1
     (= (string/char-at s i) ch) i
@@ -127,7 +126,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
         base (if (< slash 0) token (string/substring token (+ slash 1) (string/length token)))
         sdir (resolve-path (get t :cwd) (if (= dirp "") "." dirp))
         ents (if (file/dir? sdir) (sort (file/ls sdir)) nil)
-        ms (filter (fn (e) (string/starts-with? e base)) ents))
+        ms (filter ents (fn (e) (string/starts-with? e base))))
     (cond
       (or (nil? ms) (empty? ms)) t
       (= (count ms) 1)
@@ -136,7 +135,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
           (set-line t (str head dirp m suffix)))
       else
         (let (cp (editor/highlight/common-prefix ms)
-              opts (list [(string/join "  " ms) *f-dim*]))
+              opts (list [(string/join ms "  ") *f-dim*]))
           (assoc (set-line t (str head dirp cp))
             :lines (cap-lines (into (get t :lines) [opts])))))))
 
@@ -152,7 +151,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
   (let (tabs (get model :tabs) i (get model :active))
     (if (<= (count tabs) 1)
       (assoc model :done true)
-      (let (tabs2 (seq/remove-nth i tabs))
+      (let (tabs2 (seq/remove-nth tabs i))
         (assoc model :tabs tabs2 :active (math/min i (dec (count tabs2))))))))
 
 (defn goto-tab (model n)
@@ -172,7 +171,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 
 (defn any-jobs? (model)
   "True if any tab has a running background job — drives the poll beat."
-  (fold (fn (acc t) (or acc (not (empty? (get t :jobs))))) false (get model :tabs)))
+  (fold (get model :tabs) false (fn (acc t) (or acc (not (empty? (get t :jobs)))))))
 
 (defn refresh-tick (model)
   "Set the poll beat: fast while a job runs (spinner + mailbox drain), idle otherwise."
@@ -180,12 +179,12 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 
 (defn job-has? (jobs jid)
   "True if `jobs` contains a job with id `jid`."
-  (not (empty? (filter (fn (j) (= (get j :id) jid)) jobs))))
+  (not (empty? (filter jobs (fn (j) (= (get j :id) jid))))))
 
 (defn tab-index-with-job (model jid)
   "Index of the tab whose `:jobs` carries job id `jid`, or nil. Found by id (not by
 the active tab) because the job may finish after the user switched/added tabs."
-  (let (hit (filter (fn ([_ t]) (job-has? (get t :jobs) jid)) (seq/enumerate (get model :tabs))))
+  (let (hit (filter (seq/enumerate (get model :tabs)) (fn ([_ t]) (job-has? (get t :jobs) jid))))
     (if (empty? hit) nil (first (first hit)))))
 
 (defn job-done (model ev)
@@ -198,7 +197,7 @@ tab and append the captured output. A non-existent jid (cancelled tab) is ignore
       model
       (let (tabs (get model :tabs)
             tab (nth tabs ti)
-            jobs2 (filter (fn (j) (not (= (get j :id) jid))) (get tab :jobs))
+            jobs2 (filter (get tab :jobs) (fn (j) (not (= (get j :id) jid))))
             outlns (get result :lines)
             lines2 (cap-lines (into (get tab :lines) (into [] (or outlns nil))))
             tab2 (assoc tab :jobs jobs2 :lines lines2))
@@ -217,7 +216,7 @@ it; its output is just discarded. See ROADMAP.md.)"
         tab (active-tab model)
         jobs (get tab :jobs))
     (doseq (j jobs) (exit (get j :pid) :kill))
-    (let (notes (map (fn (j) (list ["^C " *f-dim*] [(get j :line) *f-dim*])) jobs)
+    (let (notes (map jobs (fn (j) (list ["^C " *f-dim*] [(get j :line) *f-dim*])))
           lines2 (cap-lines (into (get tab :lines) (into [] notes)))
           tab2 (assoc tab :jobs '() :lines lines2 :scroll 0))
       (refresh-tick (assoc model :tabs (assoc (get model :tabs) i tab2))))))
@@ -338,8 +337,7 @@ component like every shell — drives the lineedit edit line."
 
 ;; ---- view (model → frame) ---------------------------------------------------
 
-(defn- draw-spans-acc
-  (row col spans cols acc)
+(defn- draw-spans-acc (row col spans cols acc)
   (if (or (empty? spans) (>= col cols))
     (reverse acc)
     (let ([s face] (first spans)
@@ -358,10 +356,9 @@ component like every shell — drives the lineedit edit line."
   (draw-spans-acc row col spans cols nil))
 
 (defn render-window (window cols)
-  (mapcat (fn ([i line]) (draw-spans (+ 1 i) 0 line cols)) (seq/enumerate window)))
+  (mapcat (seq/enumerate window) (fn ([i line]) (draw-spans (+ 1 i) 0 line cols))))
 
-(defn- draw-tabs-acc
-  (tabs idx active spin col cols acc)
+(defn- draw-tabs-acc (tabs idx active spin col cols acc)
   (if (or (empty? tabs) (>= col cols))
     (reverse acc)
     (let (tab (first tabs)
@@ -406,7 +403,7 @@ component like every shell — drives the lineedit edit line."
 the prompt — the live, Claude-CLI-style view of what's running in this tab."
   (let (os/now (get model :now 0)
         spin (get model :spin 0))
-    (map (fn (j) (job-status-line os/now spin j)) (get tab :jobs))))
+    (map (get tab :jobs) (fn (j) (job-status-line os/now spin j)))))
 
 (defn view (model cols rows)
   "Render the model to a frame: tab bar (row 0), scrollback, running-job spinners,
@@ -429,7 +426,7 @@ edit line, status bar. While reverse-searching, the edit line shows lineedit's
         total (count vlines)
         scroll (math/min (get tab :scroll 0) (math/max 0 (- total height)))
         start (math/max 0 (- total height scroll))
-        window (take height (drop start vlines))
+        window (take (drop vlines start) height)
         body (render-window window cols)
         curop (if (= scroll 0)
                 (let (row (+ 1 (- (dec total) start))
