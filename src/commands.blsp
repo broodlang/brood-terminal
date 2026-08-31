@@ -60,10 +60,9 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 
 (defn split-path (p)
   "The non-empty `/`-separated components of `p`."
-  (filter (fn (s) (not (= s ""))) (string/split p "/")))
+  (filter (string/split p "/") (fn (s) (not (= s "")))))
 
-(defn- norm-step
-  (stack c)
+(defn- norm-step (stack c)
   (cond
     (= c ".") stack
     (= c "..") (if (empty? stack) stack (seq/subvec stack 0 (dec (count stack))))
@@ -74,8 +73,8 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
   (let (p1 (expand-tilde p)
         joined (if (string/starts-with? p1 "/") p1 (str cwd "/" p1))
-        comps (fold norm-step [] (split-path joined)))
-    (str "/" (string/join "/" comps))))
+        comps (fold (split-path joined) [] norm-step))
+    (str "/" (string/join comps "/"))))
 
 (defn short-cwd (cwd)
   "`cwd` with the home prefix shown as `~` (the prompt's compact form)."
@@ -93,12 +92,10 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
     (or (os/env (string/substring t 1 (string/length t))) "")
     t))
 
-(defn- tok-push
-  (cur toks)
+(defn- tok-push (cur toks)
   (if (= cur "") toks (cons (expand-token cur) toks)))
 
-(defn- tok-scan
-  (cs cur toks inq)
+(defn- tok-scan (cs cur toks inq)
   (if (empty? cs)
     (reverse (tok-push cur toks))
     (let (c (first cs)
@@ -116,11 +113,10 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
 
 ;; ---- small helpers ----------------------------------------------------------
 
-(defn- chunk-acc
-  (n coll acc)
+(defn- chunk-acc (n coll acc)
   (if (empty? coll)
     (reverse acc)
-    (chunk-acc n (drop n coll) (cons (take n coll) acc))))
+    (chunk-acc n (drop coll n) (cons (take coll n) acc))))
 
 (defn chunk (n coll)
   "`coll` split into consecutive lists of at most `n` items (keeps the remainder,
@@ -128,23 +124,23 @@ unlike `partition`)."
   (chunk-acc n coll nil))
 
 (defn max-len (strs)
-  (fold (fn (m s) (math/max m (string/length s))) 0 strs))
+  (fold strs 0 (fn (m s) (math/max m (string/length s)))))
 
 (defn split-lines (s)
   "`s` split on newlines (a trailing newline does not yield a final empty line)."
   (let (parts (string/split s "\n")
         n (count parts))
     (if (and (> n 1) (= (nth parts (dec n)) ""))
-      (take (dec n) parts)
+      (take parts (dec n))
       parts)))
 
 (defn flag? (args f) (includes? args f))
-(defn positional (args) (filter (fn (a) (not (string/starts-with? a "-"))) args))
+(defn positional (args) (filter args (fn (a) (not (string/starts-with? a "-")))))
 
 ;; ---- ls / ll ----------------------------------------------------------------
 
 (defn visible (entries showall)
-  (if showall entries (filter (fn (e) (not (string/starts-with? e "."))) entries)))
+  (if showall entries (filter entries (fn (e) (not (string/starts-with? e "."))))))
 
 (defn ls-cell (dir name)
   ;; [display-string face] — directories get a trailing slash and the dir face.
@@ -154,14 +150,14 @@ unlike `partition`)."
 
 (defn ls-row-spans (cells colw)
   ;; one span-line: each cell padded to colw, keeping its own face.
-  (map (fn ([disp face]) [(string/pad-right disp colw) face]) cells))
+  (map cells (fn ([disp face]) [(string/pad-right disp colw) face])))
 
 (defn ls-grid (dir names cols)
-  (let (cells (map (fn (n) (ls-cell dir n)) names)
-        colw (+ 2 (max-len (map (fn (c) (first c)) cells)))
+  (let (cells (map names (fn (n) (ls-cell dir n)))
+        colw (+ 2 (max-len (map cells (fn (c) (first c)))))
         ncols (math/max 1 (math/quot (math/max cols 1) colw))
         rows (chunk ncols cells))
-    (map (fn (r) (ls-row-spans r colw)) rows)))
+    (map rows (fn (r) (ls-row-spans r colw)))))
 
 (defn cmd-ls (args cwd cols)
   (let (showall (flag? args "-a")
@@ -170,8 +166,7 @@ unlike `partition`)."
         target (resolve-path cwd arg0))
     (cond
       (not (file/exists? target))
-        (err (str "ls: cannot access '"
-               arg0 "': No such file or directory"))
+        (err (str "ls: cannot access '" arg0 "': No such file or directory"))
       (not (file/dir? target)) (out (list (ln arg0)))
       else
         (let (names (sort (visible (file/ls target) showall)))
@@ -198,7 +193,7 @@ unlike `partition`)."
       (not (file/dir? target)) (out (list (ll-line cwd arg0)))
       else
         (let (names (sort (visible (file/ls target) (flag? args "-a"))))
-          (out (map (fn (n) (ll-line target n)) names))))))
+          (out (map names (fn (n) (ll-line target n))))))))
 
 ;; ---- cat / head / tail / wc / grep -----------------------------------------
 
@@ -212,30 +207,28 @@ unlike `partition`)."
 
 (defn for-each-file (cwd args render-ok)
   ;; fold over file args, concatenating output lines; errors render in red.
-  (out (fold (fn (acc a)
-               (match (read-file-lines cwd a)
-                 ([:err m] (append acc (list (ln (str "cat: " m) *f-err*))))
-                 ([:ok lns] (append acc (render-ok a lns)))))
-         nil args)))
+  (out (fold args
+         nil
+         (fn (acc a)
+           (match (read-file-lines cwd a)
+             ([:err m] (append acc (list (ln (str "cat: " m) *f-err*))))
+             ([:ok lns] (append acc (render-ok a lns))))))))
 
 (defn cmd-cat (args cwd)
   (if (empty? args)
     (err "cat: missing file operand")
-    (for-each-file cwd args (fn (a lns) (map (fn (l) (ln l)) lns)))))
+    (for-each-file cwd args (fn (a lns) (map lns (fn (l) (ln l)))))))
 
 (defn parse-n (args default)
   ;; -> [n positional-args] ; supports "-n N" and "-N".
   (cond
     (and (>= (count args) 2) (= (first args) "-n"))
       [(or (string/->number (nth args 1)) default)
-        (drop 2
-          args)]
+        (drop args 2)]
     (and (>= (count args) 1)
       (string/starts-with? (first args) "-")
       (> (string/length (first args)) 1))
-      [(or (string/->number (string/substring (first args)
-                              1
-                              (string/length (first args))))
+      [(or (string/->number (string/substring (first args) 1 (string/length (first args))))
          default)
         (rest args)]
     else [default args]))
@@ -244,7 +237,7 @@ unlike `partition`)."
   (let ([n files] (parse-n args 10))
     (if (empty? files)
       (err "head: missing file operand")
-      (for-each-file cwd files (fn (a lns) (map (fn (l) (ln l)) (take n lns)))))))
+      (for-each-file cwd files (fn (a lns) (map (take lns n) (fn (l) (ln l))))))))
 
 (defn cmd-tail (args cwd)
   (let ([n files] (parse-n args 10))
@@ -254,35 +247,33 @@ unlike `partition`)."
         files
         (fn (a lns)
           (let (c (count lns))
-            (map (fn (l) (ln l)) (drop (math/max 0 (- c n)) lns))))))))
+            (map (drop lns (math/max 0 (- c n))) (fn (l) (ln l)))))))))
 
 (defn word-count (s)
-  (count (filter (fn (w) (not (= w ""))) (string/split (string/replace s "\t" " ") " "))))
+  (count (filter (string/split (string/replace s "\t" " ") " ") (fn (w) (not (= w ""))))))
 
 (defn cmd-wc (args cwd)
   (if (empty? args)
     (err "wc: missing file operand")
-    (out (fold (fn (acc a)
-                 (match (read-file-lines cwd a)
-                   ([:err m] (append acc (list (ln (str "wc: " m) *f-err*))))
-                   ([:ok lns] (let (text (string/join "\n" lns)
-                                    spec (str (string/pad-left (str (count lns)) 8)
-                                           (string/pad-left (str (fold +
-                                                                   0
-                                                                   (map word-count lns)))
-                                             8)
-                                           (string/pad-left (str (string/length text)) 8)
-                                           "  "
-                                           a))
-                                (append acc (list (ln spec)))))))
-           nil args))))
+    (out (fold args
+           nil
+           (fn (acc a)
+             (match (read-file-lines cwd a)
+               ([:err m] (append acc (list (ln (str "wc: " m) *f-err*))))
+               ([:ok lns] (let (text (string/join lns "\n")
+                                spec (str (string/pad-left (str (count lns)) 8)
+                                       (string/pad-left (str (fold (map lns word-count) 0 +))
+                                         8)
+                                       (string/pad-left (str (string/length text)) 8)
+                                       "  "
+                                       a))
+                            (append acc (list (ln spec)))))))))))
 
 (defn grep-file (cwd pattern a multi?)
   (match (read-file-lines cwd a)
     ([:err m] (list (ln (str "grep: " m) *f-err*)))
-    ([:ok lns] (let (hits (filter (fn (l) (includes? l pattern)) lns))
-                 (map (fn (l) (if multi? (list [(str a ":") *f-dim*] [l nil]) (ln l)))
-                   hits)))))
+    ([:ok lns] (let (hits (filter lns (fn (l) (includes? l pattern))))
+                 (map hits (fn (l) (if multi? (list [(str a ":") *f-dim*] [l nil]) (ln l))))))))
 
 (defn cmd-grep (args cwd)
   (if (< (count args) 2)
@@ -290,7 +281,7 @@ unlike `partition`)."
     (let (pattern (first args)
           files (rest args)
           multi? (> (count files) 1))
-      (out (fold (fn (acc a) (append acc (grep-file cwd pattern a multi?))) nil files)))))
+      (out (fold files nil (fn (acc a) (append acc (grep-file cwd pattern a multi?))))))))
 
 ;; ---- mkdir / touch / rm -----------------------------------------------------
 
@@ -300,20 +291,20 @@ unlike `partition`)."
 (defn cmd-mkdir (args cwd)
   (if (empty? args)
     (err "mkdir: missing operand")
-    (out (filter (fn (x) (not (nil? x)))
-           (map (fn (a) (try-fs (fn () (do (file/mkdir (resolve-path cwd a)) nil)) "mkdir: "))
-             args)))))
+    (out (filter (map args
+                   (fn (a) (try-fs (fn () (do (file/mkdir (resolve-path cwd a)) nil)) "mkdir: ")))
+           (fn (x) (not (nil? x)))))))
 
 (defn cmd-touch (args cwd)
   (if (empty? args)
     (err "touch: missing operand")
-    (out (filter (fn (x) (not (nil? x)))
-           (map (fn (a)
-                  (let (p (resolve-path cwd a))
-                    (if (file/exists? p)
-                      nil
-                      (try-fs (fn () (do (file/spit p "") nil)) "touch: "))))
-             args)))))
+    (out (filter (map args
+                   (fn (a)
+                     (let (p (resolve-path cwd a))
+                       (if (file/exists? p)
+                         nil
+                         (try-fs (fn () (do (file/spit p "") nil)) "touch: ")))))
+           (fn (x) (not (nil? x)))))))
 
 (defn rm-one (cwd recursive? a)
   (let (p (resolve-path cwd a))
@@ -330,19 +321,19 @@ unlike `partition`)."
         targets (positional args))
     (if (empty? targets)
       (err "rm: missing operand")
-      (out (filter (fn (x) (not (nil? x))) (map (fn (a) (rm-one cwd recursive? a)) targets))))))
+      (out (filter (map targets (fn (a) (rm-one cwd recursive? a))) (fn (x) (not (nil? x))))))))
 
 ;; ---- misc -------------------------------------------------------------------
 
-(defn cmd-echo (args) (out (list (ln (string/join " " args)))))
+(defn cmd-echo (args) (out (list (ln (string/join args " ")))))
 (defn cmd-pwd (cwd) (out (list (ln cwd))))
 (defn cmd-whoami () (out (list (ln (or (os/env "USER") "unknown")))))
 (defn cmd-date () (out (list (ln (str (os/now) " (ms since epoch)")))))
 
 (defn cmd-history (history)
-  (out (map (fn ([i h])
-              (list [(string/pad-left (str (+ i 1)) 5) *f-dim*] ["  " nil] [h nil]))
-         (seq/enumerate history))))
+  (out (map (seq/enumerate history)
+         (fn ([i h])
+           (list [(string/pad-left (str (+ i 1)) 5) *f-dim*] ["  " nil] [h nil])))))
 
 (def *help*
   [["brood-terminal — an eshell-style shell: Brood is the language, anything that" *f-head*]
@@ -363,7 +354,7 @@ unlike `partition`)."
     ["      or interactive/full-screen programs yet (vim, top). See ROADMAP.md." *f-dim*]])
 
 (defn cmd-help ()
-  (out (map (fn (sp) (list sp)) *help*)))
+  (out (map *help* (fn (sp) (list sp)))))
 
 ;; ---- dispatch ---------------------------------------------------------------
 
@@ -451,7 +442,7 @@ built-in can't honour — so the whole line must go to `/bin/sh` instead."
 (defn external-result (output code)
   ;; map the captured output + exit code into a result map; a non-zero exit gets
   ;; a dim trailer line.
-  (let (body (if (= output "") nil (map ln (split-lines output))))
+  (let (body (if (= output "") nil (map (split-lines output) ln)))
     (if (and (int? code) (not (= code 0)))
       {:lines (append body (list (ln (str "[exit " code "]") *f-dim*)))}
       {:lines body})))
