@@ -223,13 +223,14 @@ unlike `partition`)."
   ;; -> [n positional-args] ; supports "-n N" and "-N".
   (cond
     (and (>= (count args) 2) (= (first args) "-n"))
-      [(or (string/->number (nth args 1)) default)
+      [(let (n (string/->number (nth args 1))) (if (failure? n) default n))
         (drop args 2)]
     (and (>= (count args) 1)
       (string/starts-with? (first args) "-")
       (> (string/length (first args)) 1))
-      [(or (string/->number (string/substring (first args) 1 (string/length (first args))))
-         default)
+      [(let (n (string/->number
+                 (string/substring (first args) 1 (string/length (first args)))))
+         (if (failure? n) default n))
         (rest args)]
     else [default args]))
 
