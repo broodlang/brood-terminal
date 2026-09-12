@@ -126,7 +126,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
         base (if (< slash 0) token (string/substring token (+ slash 1) (string/length token)))
         sdir (resolve-path (get t :cwd) (if (= dirp "") "." dirp))
         ents (if (file/dir? sdir) (sort (file/ls sdir)) nil)
-        ms (filter ents (fn (e) (string/starts-with? e base))))
+        ms (seq/filter ents (fn (e) (string/starts-with? e base))))
     (cond
       (or (nil? ms) (empty? ms)) t
       (= (count ms) 1)
@@ -179,12 +179,12 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 
 (defn job-has? (jobs jid)
   "True if `jobs` contains a job with id `jid`."
-  (not (empty? (filter jobs (fn (j) (= (get j :id) jid))))))
+  (not (empty? (seq/filter jobs (fn (j) (= (get j :id) jid))))))
 
 (defn tab-index-with-job (model jid)
   "Index of the tab whose `:jobs` carries job id `jid`, or nil. Found by id (not by
 the active tab) because the job may finish after the user switched/added tabs."
-  (let (hit (filter (seq/enumerate (get model :tabs)) (fn ([_ t]) (job-has? (get t :jobs) jid))))
+  (let (hit (seq/filter (seq/enumerate (get model :tabs)) (fn ([_ t]) (job-has? (get t :jobs) jid))))
     (if (empty? hit) nil (first (first hit)))))
 
 (defn job-done (model ev)
@@ -197,7 +197,7 @@ tab and append the captured output. A non-existent jid (cancelled tab) is ignore
       model
       (let (tabs (get model :tabs)
             tab (nth tabs ti)
-            jobs2 (filter (get tab :jobs) (fn (j) (not (= (get j :id) jid))))
+            jobs2 (seq/filter (get tab :jobs) (fn (j) (not (= (get j :id) jid))))
             outlns (get result :lines)
             lines2 (cap-lines (into (get tab :lines) (into [] (or outlns nil))))
             tab2 (assoc tab :jobs jobs2 :lines lines2))

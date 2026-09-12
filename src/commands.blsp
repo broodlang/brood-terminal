@@ -60,7 +60,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 
 (defn split-path (p)
   "The non-empty `/`-separated components of `p`."
-  (filter (string/split p "/") (fn (s) (not (= s "")))))
+  (seq/filter (string/split p "/") (fn (s) (not (= s "")))))
 
 (defn- norm-step (stack c)
   (cond
@@ -135,12 +135,12 @@ unlike `partition`)."
       parts)))
 
 (defn flag? (args f) (includes? args f))
-(defn positional (args) (filter args (fn (a) (not (string/starts-with? a "-")))))
+(defn positional (args) (seq/filter args (fn (a) (not (string/starts-with? a "-")))))
 
 ;; ---- ls / ll ----------------------------------------------------------------
 
 (defn visible (entries showall)
-  (if showall entries (filter entries (fn (e) (not (string/starts-with? e "."))))))
+  (if showall entries (seq/filter entries (fn (e) (not (string/starts-with? e "."))))))
 
 (defn ls-cell (dir name)
   ;; [display-string face] — directories get a trailing slash and the dir face.
@@ -228,8 +228,7 @@ unlike `partition`)."
     (and (>= (count args) 1)
       (string/starts-with? (first args) "-")
       (> (string/length (first args)) 1))
-      [(let (n (string/->number
-                 (string/substring (first args) 1 (string/length (first args)))))
+      [(let (n (string/->number (string/substring (first args) 1 (string/length (first args)))))
          (if (failure? n) default n))
         (rest args)]
     else [default args]))
@@ -251,7 +250,7 @@ unlike `partition`)."
             (map (drop lns (math/max 0 (- c n))) (fn (l) (ln l)))))))))
 
 (defn word-count (s)
-  (count (filter (string/split (string/replace s "\t" " ") " ") (fn (w) (not (= w ""))))))
+  (count (seq/filter (string/split (string/replace s "\t" " ") " ") (fn (w) (not (= w ""))))))
 
 (defn cmd-wc (args cwd)
   (if (empty? args)
@@ -273,7 +272,7 @@ unlike `partition`)."
 (defn grep-file (cwd pattern a multi?)
   (match (read-file-lines cwd a)
     ([:err m] (list (ln (str "grep: " m) *f-err*)))
-    ([:ok lns] (let (hits (filter lns (fn (l) (includes? l pattern))))
+    ([:ok lns] (let (hits (seq/filter lns (fn (l) (includes? l pattern))))
                  (map hits (fn (l) (if multi? (list [(str a ":") *f-dim*] [l nil]) (ln l))))))))
 
 (defn cmd-grep (args cwd)
@@ -292,19 +291,20 @@ unlike `partition`)."
 (defn cmd-mkdir (args cwd)
   (if (empty? args)
     (err "mkdir: missing operand")
-    (out (filter (map args
-                   (fn (a) (try-fs (fn () (do (file/mkdir (resolve-path cwd a)) nil)) "mkdir: ")))
+    (out (seq/filter (map args
+                       (fn (a)
+                         (try-fs (fn () (do (file/mkdir (resolve-path cwd a)) nil)) "mkdir: ")))
            (fn (x) (not (nil? x)))))))
 
 (defn cmd-touch (args cwd)
   (if (empty? args)
     (err "touch: missing operand")
-    (out (filter (map args
-                   (fn (a)
-                     (let (p (resolve-path cwd a))
-                       (if (file/exists? p)
-                         nil
-                         (try-fs (fn () (do (file/spit p "") nil)) "touch: ")))))
+    (out (seq/filter (map args
+                       (fn (a)
+                         (let (p (resolve-path cwd a))
+                           (if (file/exists? p)
+                             nil
+                             (try-fs (fn () (do (file/spit p "") nil)) "touch: ")))))
            (fn (x) (not (nil? x)))))))
 
 (defn rm-one (cwd recursive? a)
@@ -322,7 +322,7 @@ unlike `partition`)."
         targets (positional args))
     (if (empty? targets)
       (err "rm: missing operand")
-      (out (filter (map targets (fn (a) (rm-one cwd recursive? a))) (fn (x) (not (nil? x))))))))
+      (out (seq/filter (map targets (fn (a) (rm-one cwd recursive? a))) (fn (x) (not (nil? x))))))))
 
 ;; ---- misc -------------------------------------------------------------------
 
