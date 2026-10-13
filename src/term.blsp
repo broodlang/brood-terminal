@@ -73,7 +73,7 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 (defn fresh-edit (hist)
   "A fresh edit-line state seeded with newest-first history `hist`, in `:path` word
 mode (M-b/M-f/C-w/M-d move and kill by path component)."
-  (assoc (editor/lineedit/lineedit-init "" "" hist) :word-mode :path))
+  (assoc (editor/lineedit/lineedit-init "" hist) :word-mode :path))
 
 (defn edit-text (t)
   "The tab's current edit-line text."
