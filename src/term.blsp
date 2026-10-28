@@ -468,7 +468,7 @@ drains the mailbox between blocking keyboard reads."
 (defn start-term ()
   "Launch on the terminal frontend (needs a host TTY). Blocks until the last tab
 is closed — Ctrl-W on the final tab, or `exit`."
-  (ui-run (fresh-model) view update (with-jobs *term-display*)))
+  (ui-run (fresh-model) view update (with-jobs editor/ui/*term-display*)))
 
 (defn start-gui ()
   "Launch in a native window (`--features gui` build) — no host terminal needed.

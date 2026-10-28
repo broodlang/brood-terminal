@@ -31,7 +31,7 @@ input-delivery seam already exists — `gui.rs` posts to a process mailbox and
   mkdir, touch, rm, history, clear, whoami, date, help, exit.
 - `src/term.blsp` — the `ui-run` app: model/`view`/`update`, tabs, line editing,
   ↑/↓ history, Tab path-completion, scrollback, mouse-wheel + PgUp/PgDn scroll.
-  `(start)` launches it on `*term-display*`.
+  `(start)` launches it on `editor/ui/*term-display*`.
 - `src/main.blsp` — entry point; `(main)` calls `(term/start)`.
 
 `view`/`update` are pure (model + size → frame / model + input → model), so the

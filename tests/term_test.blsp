@@ -118,7 +118,7 @@
   (test ":tick advances the spinner frame"
     (assert= (get (update (model-with-job 7 (self)) :tick 80 24) :spin) 1))
   (test "ctrl-c cancels running jobs instead of the edit line"
-    (let (p (spawn (sleep 100000))
+    (let (p (spawn (proc/sleep 100000))
           m (update (model-with-job 1 p) :ctrl-c 80 24))
       (is (empty? (get (active-tab m) :jobs)))
       (is (not (get m :done)))))
