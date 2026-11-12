@@ -25,7 +25,7 @@
 (describe "path word mode (:word-mode :path)"
   (test "M-b moves back one path component, not the whole path"
     (let (m (feed (type-str (fresh) "cat /usr/share/dict") [:alt-b]))
-      (assert= (get (get (active-tab m) :edit) :point) (string/length "cat /usr/share/"))))
+      (assert= (get (get (active-tab m) :edit) :point) (count "cat /usr/share/"))))
   (test "C-w kills only the trailing path component"
     (assert= (line (feed (type-str (fresh) "cat /usr/share") [:ctrl-w])) "cat /usr/")))
 

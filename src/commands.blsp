@@ -55,7 +55,7 @@ Dispatched by `(run-command input ctx)`, returning a result map of `:lines`
 (defn expand-tilde (p)
   (cond
     (= p "~") (home)
-    (string/starts-with? p "~/") (str (home) (string/substring p 1 (string/length p)))
+    (string/starts-with? p "~/") (str (home) (string/substring p 1 (count p)))
     else p))
 
 (defn split-path (p)
@@ -81,15 +81,14 @@ leading `~`, joins relatives onto `cwd`, and collapses `.` / `..`."
   (let (h (home))
     (cond
       (= cwd h) "~"
-      (string/starts-with? cwd (str h "/"))
-        (str "~" (string/substring cwd (string/length h) (string/length cwd)))
+      (string/starts-with? cwd (str h "/")) (str "~" (string/substring cwd (count h) (count cwd)))
       else cwd)))
 
 ;; ---- tokenizer (whitespace split with "double quotes" + $VAR expansion) -----
 
 (defn expand-token (t)
-  (if (and (string/starts-with? t "$") (> (string/length t) 1))
-    (or (os/env (string/substring t 1 (string/length t))) "")
+  (if (and (string/starts-with? t "$") (> (count t) 1))
+    (or (os/env (string/substring t 1 (count t))) "")
     t))
 
 (defn- tok-push (cur toks)
@@ -124,7 +123,7 @@ unlike `partition`)."
   (chunk-acc n coll nil))
 
 (defn max-len (strs)
-  (fold strs 0 (fn (m s) (math/max m (string/length s)))))
+  (fold strs 0 (fn (m s) (math/max m (count s)))))
 
 (defn split-lines (s)
   "`s` split on newlines (a trailing newline does not yield a final empty line)."
@@ -217,7 +216,7 @@ unlike `partition`)."
 (defn cmd-cat (args cwd)
   (if (empty? args)
     (err "cat: missing file operand")
-    (for-each-file cwd args (fn (a lns) (map lns (fn (l) (ln l)))))))
+    (for-each-file cwd args (fn (_file lns) (map lns (fn (l) (ln l)))))))
 
 (defn parse-n (args default)
   ;; -> [n positional-args] ; supports "-n N" and "-N".
@@ -227,8 +226,8 @@ unlike `partition`)."
         (drop args 2)]
     (and (>= (count args) 1)
       (string/starts-with? (first args) "-")
-      (> (string/length (first args)) 1))
-      [(let (n (string/->number (string/substring (first args) 1 (string/length (first args)))))
+      (> (count (first args)) 1))
+      [(let (n (string/->number (string/substring (first args) 1 (count (first args)))))
          (if (failure? n) default n))
         (rest args)]
     else [default args]))
@@ -237,7 +236,7 @@ unlike `partition`)."
   (let ([n files] (parse-n args 10))
     (if (empty? files)
       (err "head: missing file operand")
-      (for-each-file cwd files (fn (a lns) (map (take lns n) (fn (l) (ln l))))))))
+      (for-each-file cwd files (fn (_file lns) (map (take lns n) (fn (l) (ln l))))))))
 
 (defn cmd-tail (args cwd)
   (let ([n files] (parse-n args 10))
@@ -245,7 +244,7 @@ unlike `partition`)."
       (err "tail: missing file operand")
       (for-each-file cwd
         files
-        (fn (a lns)
+        (fn (_file lns)
           (let (c (count lns))
             (map (drop lns (math/max 0 (- c n))) (fn (l) (ln l)))))))))
 
@@ -264,7 +263,7 @@ unlike `partition`)."
                                 spec (str (string/pad-left (str (count lns)) 8)
                                        (string/pad-left (str (fold (map lns word-count) 0 +))
                                          8)
-                                       (string/pad-left (str (string/length text)) 8)
+                                       (string/pad-left (str (count text)) 8)
                                        "  "
                                        a))
                             (append acc (list (ln spec)))))))))))
@@ -456,7 +455,7 @@ finishes, then the captured output is returned as scrollback lines (no streaming
   (let (cwd (get ctx :cwd)
         tmp (str "/tmp/brood-term-" (os/now-ns) ".out")
         wrapped (str "cd " (shell-quote cwd) " && { " line " ; } > " tmp " 2>&1")
-        code (try (os/run-process "/bin/sh" ["-c" wrapped]) (catch e -1))
+        code (try (os/run-process "/bin/sh" ["-c" wrapped]) (catch _ -1))
         output (if (file/exists? tmp) (file/slurp tmp) ""))
     (when (file/exists? tmp) (file/rm tmp))
     (external-result output code)))
@@ -477,11 +476,11 @@ run it inline or hand it to a worker process. Returns one of:
     it can block, so the caller should run it off the UI process (see `run-external`).
 This is the seam that keeps `cd`/built-ins/Brood eval synchronous (they mutate shell
 state or are instant) while external commands become non-blocking background jobs."
-  (let (s (string/triml input))
+  (let (s (string/trim-left input))
     (cond
       (string/blank? s) [:inline {:lines nil}]
       (string/starts-with? s "(") [:inline (run-brood s)]
-      (string/starts-with? s "*") [:external (string/substring s 1 (string/length s))]
+      (string/starts-with? s "*") [:external (string/substring s 1 (count s))]
       else
         (let (toks (tokenize s)
               cmd (first toks))

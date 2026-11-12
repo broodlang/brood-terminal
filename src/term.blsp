@@ -59,13 +59,13 @@ the `commands` mini-shell. `(start)` launches it on the terminal frontend."
 
 (defn rindex (s ch)
   "Index of the last occurrence of 1-char `ch` in `s`, or -1."
-  (rindex-at s ch (dec (string/length s))))
+  (rindex-at s ch (dec (count s))))
 
 (defn basename (p)
   (let (i (rindex p "/"))
     (if (< i 0)
       p
-      (let (b (string/substring p (+ i 1) (string/length p)))
+      (let (b (string/substring p (+ i 1) (count p)))
         (if (= b "") "/" b)))))
 
 ;; ---- tab / model accessors --------------------------------------------------
@@ -82,7 +82,7 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
 (defn set-line (t s)
   "The tab with its edit line replaced by `s`, point at the end."
   (let (e (get t :edit))
-    (assoc t :edit (assoc e :text s :point (string/length s) :hist-idx -1))))
+    (assoc t :edit (assoc e :text s :point (count s) :hist-idx -1))))
 
 (defn new-tab (cwd)
   {:cwd cwd :lines (welcome) :edit (fresh-edit '()) :history [] :scroll 0 :jobs '()})
@@ -120,10 +120,10 @@ mode (M-b/M-f/C-w/M-d move and kill by path component)."
   (let (input (edit-text t)
         sp (rindex input " ")
         head (if (< sp 0) "" (string/substring input 0 (+ sp 1)))
-        token (if (< sp 0) input (string/substring input (+ sp 1) (string/length input)))
+        token (if (< sp 0) input (string/substring input (+ sp 1) (count input)))
         slash (rindex token "/")
         dirp (if (< slash 0) "" (string/substring token 0 (+ slash 1)))
-        base (if (< slash 0) token (string/substring token (+ slash 1) (string/length token)))
+        base (if (< slash 0) token (string/substring token (+ slash 1) (count token)))
         sdir (resolve-path (get t :cwd) (if (= dirp "") "." dirp))
         ents (if (file/dir? sdir) (sort (file/ls sdir)) nil)
         ms (seq/filter ents (fn (e) (string/starts-with? e base))))
@@ -342,11 +342,11 @@ component like every shell — drives the lineedit edit line."
     (reverse acc)
     (let ([s face] (first spans)
           avail (- cols col)
-          s2 (if (> (string/length s) avail) (string/substring s 0 avail) s))
+          s2 (if (> (count s) avail) (string/substring s 0 avail) s))
       (if (= s2 "")
         (draw-spans-acc row col (rest spans) cols acc)
         (draw-spans-acc row
-          (+ col (string/length s2))
+          (+ col (count s2))
           (rest spans)
           cols
           (cons (text row col s2 face) acc))))))
@@ -365,7 +365,7 @@ component like every shell — drives the lineedit edit line."
           busy (if (empty? (get tab :jobs)) "" (str " " (spin-frame spin)))
           label (str " " (+ idx 1) ":" (tab-title tab) busy " ")
           face (if (= idx active) {:bg :white :fg :black :bold true} {:bg :blue :fg :white})
-          w (string/length label)
+          w (count label)
           shown (if (> (+ col w) cols) (string/substring label 0 (- cols col)) label))
       (draw-tabs-acc (rest tabs)
         (+ idx 1)
@@ -413,10 +413,10 @@ edit line, status bar. While reverse-searching, the edit line shows lineedit's
         height (math/max 1 (- rows 2))
         search-p (editor/lineedit/lineedit-display-prompt (get tab :edit))
         pstr (if (= search-p "") (prompt-str tab) search-p)
-        plen (string/length pstr)
+        plen (count pstr)
         input (edit-text tab)
         curs (get (get tab :edit) :point)
-        ilen (string/length input)
+        ilen (count input)
         visw (math/max 1 (- cols plen))
         hoff (if (< curs visw) 0 (+ (- curs visw) 1))
         shown (string/substring input hoff (math/min ilen (+ hoff visw)))
@@ -468,12 +468,12 @@ drains the mailbox between blocking keyboard reads."
 (defn start-term ()
   "Launch on the terminal frontend (needs a host TTY). Blocks until the last tab
 is closed — Ctrl-W on the final tab, or `exit`."
-  (ui-run (fresh-model) view update (with-jobs editor/ui/*term-display*)))
+  (ui-run (fresh-model) view update (with-jobs editor/frontend/*term-display*)))
 
 (defn start-gui ()
   "Launch in a native window (`--features gui` build) — no host terminal needed.
 Close the window's X, Ctrl-W the last tab, or `exit` to quit."
-  (ui-run (fresh-model) view update (with-jobs (gui-display))))
+  (ui-run (fresh-model) view update (with-jobs (editor/frontend/gui-display))))
 
 (defn start ()
   "Launch brood-terminal in a native window (the default — no host TTY required).
