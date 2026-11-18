@@ -27,7 +27,8 @@
 the `commands` mini-shell. `(start)` launches it on the terminal frontend."
   (:use commands :exclude [ln])
   (:use editor/display)
-  (:use editor/ui))
+  (:use editor/ui)
+  (:shadow update))
 
 (def *max-lines* 4000)
 

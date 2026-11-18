@@ -1,7 +1,7 @@
 ;; Tests for the terminal UI reducer + renderer (term.blsp). The edit line is an
 ;; `editor/lineedit` state on the tab's `:edit` (in `:path` word mode), so editing
 ;; is driven through `update` with key inputs and asserted via `edit-text`.
-(defmodule term-test (:use term) (:use test))
+(defmodule term-test (:use term) (:use test) (:shadow update))
 
 (defn type-str (m s) (fold (string/->list s) m (fn (acc ch) (update acc ch 80 24))))
 (defn feed (m keys) (fold keys m (fn (acc k) (update acc k 80 24))))
