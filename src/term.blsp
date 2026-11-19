@@ -388,25 +388,29 @@ component like every shell — drives the lineedit edit line."
         msg (if (> scroll 0) (str hint "   [scrolled +" scroll "]") hint))
     (bar (- rows 1) cols msg {:face {:reverse true}})))
 
-(defn elapsed-str (os/now started)
+(defn elapsed-str (now:int started:int)
   "`now - started` (ms) as a `12.3s` readout (tenths), never negative."
-  (let (el (math/max 0 (- os/now started)))
+  (let (el (math/max 0 (- now started)))
     (str (math/quot el 1000) "." (math/mod (math/quot el 100) 10) "s")))
 
-(defn job-status-line (os/now spin job)
+(defn job-status-line (now spin job)
   "One spinner line for a running job: `⠋ <command>   12.3s`."
   (list [(str (spin-frame spin) " ") *f-run*]
     [(get job :line) nil]
-    [(str "   " (elapsed-str os/now (get job :started 0))) *f-dim*]))
+    [(str "   " (elapsed-str now (get job :started 0))) *f-dim*]))
 
 (defn job-status-lines (model tab)
   "The active tab's running jobs as spinner lines (newest first), shown just above
 the prompt — the live, Claude-CLI-style view of what's running in this tab."
-  (let (os/now (get model :now 0)
+  (let (now (get model :now 0)
         spin (get model :spin 0))
-    (map (get tab :jobs) (fn (j) (job-status-line os/now spin j)))))
+    (map (get tab :jobs) (fn (j) (job-status-line now spin j)))))
 
-(defn view (model cols rows)
+(defn- scroll-offset (point:int width:int)
+  "How far the edit line scrolls left so the cursor at `point` stays inside `width` columns."
+  (if (< point width) 0 (+ (- point width) 1)))
+
+(defn view (model cols:int rows:int)
   "Render the model to a frame: tab bar (row 0), scrollback, running-job spinners,
 edit line, status bar. While reverse-searching, the edit line shows lineedit's
 `(reverse-i-search)` prompt."
@@ -419,7 +423,7 @@ edit line, status bar. While reverse-searching, the edit line shows lineedit's
         curs (get (get tab :edit) :point)
         ilen (count input)
         visw (math/max 1 (- cols plen))
-        hoff (if (< curs visw) 0 (+ (- curs visw) 1))
+        hoff (scroll-offset curs visw)
         shown (string/substring input hoff (math/min ilen (+ hoff visw)))
         pline (list [pstr *f-prompt*] [shown nil])
         jobls (into [] (job-status-lines model tab))
